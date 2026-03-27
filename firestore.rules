@@ -1,0 +1,30 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isCoach() {
+      return request.auth != null;
+    }
+
+    match /seasons/{seasonId} {
+      allow read, write: if isCoach();
+    }
+
+    match /players/{playerId} {
+      allow read, write: if isCoach();
+    }
+
+    match /matches/{matchId} {
+      allow read, write: if isCoach();
+    }
+
+    match /invites/{inviteId} {
+      allow read, write: if isCoach();
+    }
+
+    match /parentViews/{token} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if false;
+    }
+  }
+}

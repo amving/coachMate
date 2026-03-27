@@ -1,0 +1,14 @@
+{
+  "name": "coachmate",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:app": "npm --workspace @coachmate/coach-app run start",
+    "dev:web": "npm --workspace @coachmate/parent-web run dev",
+    "build:functions": "npm --workspace @coachmate/firebase-functions run build",
+    "typecheck": "npm --workspaces run typecheck"
+  }
+}

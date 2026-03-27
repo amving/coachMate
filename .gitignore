@@ -1,0 +1,15 @@
+node_modules/
+.expo/
+dist/
+coverage/
+lib/
+.vite/
+.turbo/
+
+.env
+.env.local
+.env.*.local
+
+*.log
+
+.DS_Store
