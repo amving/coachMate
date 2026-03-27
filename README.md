@@ -1,11 +1,36 @@
 # CoachMate
 
-CoachMate is opgezet als een monorepo met:
+CoachMate is een mobiele team-app voor jeugdcoaches en ouders. De coach beheert seizoenen, spelers en wedstrijden in een Expo app, terwijl ouders via een veilige invite-link aanwezigheid en live wedstrijdacties kunnen doorgeven.
+
+De codebase is opgezet als een monorepo met:
 
 - een Expo React Native coach-app voor iPhone in `apps/coach-app`
 - een mobiele React webapp voor ouders in `apps/parent-web`
 - Firebase Functions in `apps/firebase-functions`
 - gedeelde domeinlogica in `packages/shared`
+
+## Quick Start
+
+Vereisten:
+
+- Node.js `22`
+- npm `10+`
+- een Firebase-project met Auth, Firestore, Functions en Hosting
+
+Installeer dependencies en controleer de workspace:
+
+```powershell
+npm install
+npm run typecheck
+```
+
+Start daarna lokaal de apps:
+
+```powershell
+npm run dev:app
+npm run dev:web
+npm run build:functions
+```
 
 ## Wat deze versie afdekt
 
@@ -39,17 +64,30 @@ Kopieer `.env.example` naar een lokale env-file en vul alle Firebase-waarden in.
 - `EXPO_PUBLIC_PARENT_WEB_URL` moet wijzen naar je Firebase Hosting domein, bijvoorbeeld `https://jouw-project.web.app`
 - `VITE_PARENT_ACTION_API_URL` moet wijzen naar de gedeployde `parentAction` function
 
-## Ontwikkelstappen
+## Ontwikkelworkflow
 
-1. Installeer Node.js en npm op de machine.
+1. Gebruik Node.js `22`.
 2. Voer in de root `npm install` uit.
-3. Maak in Firebase Auth een coach-account aan met e-mail en wachtwoord.
-4. Start de coach-app met `npm run dev:app`.
-5. Start de ouder-webapp met `npm run dev:web`.
-6. Build de functions met `npm run build:functions`.
-7. Deploy daarna Functions, Firestore rules en Hosting via je Firebase CLI workflow.
+3. Valideer de monorepo met `npm run typecheck`.
+4. Maak in Firebase Auth een coach-account aan met e-mail en wachtwoord.
+5. Start de coach-app met `npm run dev:app`.
+6. Start de ouder-webapp met `npm run dev:web`.
+7. Build de functions met `npm run build:functions`.
 
-## Firestore datamodel
+## Deployment
+
+Aanbevolen volgorde:
+
+1. Controleer dat alle env-vars en Firebase projectinstellingen kloppen.
+2. Build de functions met `npm run build:functions`.
+3. Deploy Firestore rules en indexen.
+4. Deploy Firebase Functions.
+5. Deploy Hosting voor de ouder-webapp.
+6. Test daarna een echte invite-flow via `/invite/:token`.
+
+De exacte deploy- en hardening-notities staan in `docs/production-hardening.md`.
+
+## Firestore Datamodel
 
 - `seasons/{seasonId}`
 - `players/{playerId}`
@@ -62,7 +100,3 @@ Invites zijn per speler en wedstrijd uniek. De ouder-webapp leest niet meer dire
 ## Belangrijke notitie
 
 Deze versie is een stuk dichter bij productie: coach-data vereist Firebase Auth, ouderwrites lopen server-side en de publieke ouderlink leest alleen een gesanitiseerde projectie. Een volgende echte securitystap zou token-hashing, rate limiting en App Check zijn.
-
-## Beperkingen van deze omgeving
-
-Op deze Windows-machine zijn Node.js, npm en Expo niet aanwezig. Daardoor kon ik de code wel opzetten en handmatig nalopen, maar niet lokaal installeren, typechecken of draaien.
