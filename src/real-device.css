@@ -1,0 +1,21 @@
+.real-device-screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  contain: layout paint;
+  background: #fff;
+  --device-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --mobile-safe-area-top: env(safe-area-inset-top, 0px);
+  --mobile-safe-area-height: env(safe-area-inset-bottom, 0px);
+}
+.real-device-screen .mobile-app-viewport { bottom: 0; }
+.real-device-screen .bottom-nav, .real-device-screen .toast { position: absolute; }
+.real-device-screen .bottom-sheet { max-height: calc(100% - env(safe-area-inset-top, 0px) - 16px) !important; }
+.real-device-screen input, .real-device-screen textarea, .real-device-screen select { font-size: 16px; }
+.real-device-screen img { -webkit-user-drag: none; }
+
+.sheet-handle-zone { flex-shrink: 0; min-height: 40px; }
+.sheet-header { flex-shrink: 0; touch-action: none; padding-right: 56px; }
+.sheet-close { position: absolute; z-index: 2; top: 30px; right: 12px; width: 40px; height: 40px; border: 0; border-radius: 50%; background: #eef2f6; color: #102544; font-size: 26px; }

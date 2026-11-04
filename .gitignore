@@ -1,15 +1,28 @@
 node_modules/
-.expo/
 dist/
-coverage/
-lib/
-.vite/
-.turbo/
-
+test-results/
+playwright-report/
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+*.pem
+*.key
 
+Oauth/
+client_secret*.json
+
+# Local credentials, diagnosis exports and generated release packages.
+ClientSec/
+outputs/
+.pnpm-store/
+debug.log
 *.log
-
+gha-creds-*.json
+*.p12
+*.pfx
+*.xlsx
+*.csv
+coachmate-*.json
 .DS_Store
+.vscode/
+.idea/

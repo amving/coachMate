@@ -1,0 +1,22 @@
+# Cloud Build krijgt uitsluitend buildbenodigdheden uit het uitgepakte pakket.
+*
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!index.html
+!tsconfig.json
+!vite.config.ts
+!mobile-runtime.lock.json
+!src/
+!src/**
+!server/
+!server/**
+!public/
+!public/**
+!scripts/
+!scripts/**
+!worker/
+!worker/**
+!.openai/
+!.openai/**

@@ -1,0 +1,34 @@
+name: CoachMate checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - run: node scripts/check-repository.mjs
+      - run: npm ci
+      - run: npm run test:unit
+      - run: npm run build
+      - run: bash deploy/test-cloud-shell.sh
+      - run: bash deploy/test-github-deploy.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-preview-${{ github.sha }}
+          path: dist/client/
+          retention-days: 7
+          if-no-files-found: error

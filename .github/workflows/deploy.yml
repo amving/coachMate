@@ -1,0 +1,77 @@
+name: CoachMate production
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Existing reviewed release tag, for example v42'
+        required: true
+        type: string
+      confirmation:
+        description: 'Type DEPLOY to approve production deployment'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: coachmate-production
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - id: release
+        env:
+          RELEASE_TAG: ${{ inputs.release }}
+          DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: node scripts/verify-github-release.mjs
+      - run: node scripts/check-repository.mjs
+      - run: npm ci
+      - run: npm run test:unit
+      - run: npm run build
+      - run: bash deploy/test-cloud-shell.sh
+      - run: bash deploy/test-github-deploy.sh
+  deploy:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: coachmate-f4c7a
+      - name: Build and deploy reviewed release
+        env:
+          RELEASE_TAG: ${{ inputs.release }}
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+        run: bash deploy/deploy-github.sh
+      - name: Keep release record and rollback command
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-${{ inputs.release }}-${{ github.run_id }}
+          path: outputs/github-deploy/
+          retention-days: 90
+          if-no-files-found: ignore

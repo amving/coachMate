@@ -1,0 +1,25 @@
+{
+  "id": "/",
+  "name": "CoachMate",
+  "short_name": "CoachMate",
+  "lang": "nl",
+  "start_url": "/?device=real",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#102544",
+  "icons": [
+    {
+      "src": "/icons/band-tile-192-v4.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/band-tile-512-v4.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
