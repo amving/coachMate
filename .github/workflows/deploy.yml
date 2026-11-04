@@ -39,8 +39,8 @@ jobs:
         run: node scripts/verify-github-release.mjs
       - run: node scripts/check-repository.mjs
       - run: npm ci
-      - run: npm run test:unit
       - run: npm run build
+      - run: npm run test:unit
       - run: bash deploy/test-cloud-shell.sh
       - run: bash deploy/test-github-deploy.sh
   deploy:
