@@ -1,6 +1,6 @@
 # CoachMate via GitHub
 
-## Wat lokaal gereedstaat
+## Wat gereedstaat
 
 - `.github/workflows/check.yml`: bij push/PR automatisch repositorycontrole, unit/backendtests, runtimecontrole via build en offline deploymenttests. De gebouwde frontend is zeven dagen beschikbaar als Actions-artifact. Dit is een downloadbaar bouwartefact, geen online testomgeving.
 - `.github/workflows/deploy.yml`: uitsluitend handmatig, vanuit de standaardbranch, met een bestaande releasetag (`v42`) en bevestiging `DEPLOY`. De tag moet in de geschiedenis van de standaardbranch zitten; tests draaien opnieuw op exact die commit.
@@ -9,15 +9,17 @@
 - Actions bewaart een releaserecord met tag/commit/digest/revisie en `rollback.sh`. Gewone pushes rollen nooit uit.
 - `.gitignore` sluit lokale credentials, herstelbestanden, exports, gegenereerde pakketten en logs uit. Er wordt geen wedstrijddata naar GitHub gekopieerd.
 
-## Nog te koppelen
+## Koppeling ingericht op 4 november 2026
 
-Er is nog geen Git-repository in deze projectmap. De gebruiker kiest een **bestaande** GitHub-repository en wil de ChatGPT GitHub-plugin gebruiken. De GitHub-tools en pluginbeheer zijn in deze chat niet beschikbaar; er is dus nog niets gepusht, ingesteld of live uitgerold.
+De bestaande repository is `amving/coachMate`, standaardbranch `main`, repository-ID `1193512205`, eigenaar-ID `271487963`. De V41-app en workflows zijn gepusht. GitHub Actions-run `41917898958` op commit `4f40525` is geslaagd nadat build vóór de tests is geplaatst: de packagingtest heeft gebouwde bestanden nodig.
 
-Zodra de plugin beschikbaar is: identificeer de door de gebruiker bedoelde repository, controleer zichtbaarheid en bestaande geschiedenis/defaultbranch en integreer deze lokale code via een aparte branch/PR. Overschrijf geen bestaande history en gebruik geen force-push. Controleer vooraf de bestandenlijst met `node scripts/check-repository.mjs`. Houd de runtime-lock intact. Een geslaagde lokale controle is nog geen geslaagde GitHub Actions-run.
+Na expliciete goedkeuring is het gecontroleerde installatiescript uitgevoerd via Cloud Shell. Provider `projects/496317493719/locations/global/workloadIdentityPools/coachmate-github/providers/github-production` is actief. De repository-variabelen `GCP_WIF_PROVIDER` en `GCP_DEPLOY_SERVICE_ACCOUNT` zijn opgeslagen en gecontroleerd. Het deploymentaccount is `coachmate-github-deploy@coachmate-f4c7a.iam.gserviceaccount.com` en heeft de hieronder beschreven resourcegebonden rechten.
+
+Er is nog geen productie-uitrol vanuit GitHub uitgevoerd en geen GitHub OIDC-aanmelding in een echte deploymentrun geverifieerd. Bij afronding van deze inrichting stond Cloud Run nog op `coachmate-00032-nub` met 100% verkeer. Een geslaagde checks-run of de voorbeeldsamenvatting uit offline deploymenttests is geen productie-uitrol.
 
 ## Eenmalige Google Cloud-configuratie
 
-`deploy/setup-github-identity.sh OWNER/REPO REPOSITORY_ID OWNER_ID DEFAULT_BRANCH` is een voorbereid beheerdersscript. Gebruik de daadwerkelijk geverifieerde numerieke GitHub-repository- en eigenaar-ID's. **Eerst beoordelen en toestemming voor de concrete IAM-koppeling verkrijgen; het script is niet uitgevoerd.**
+`deploy/setup-github-identity.sh OWNER/REPO REPOSITORY_ID OWNER_ID DEFAULT_BRANCH` is het beheerdersscript voor de eenmalige inrichting. Het is met de hierboven gecontroleerde ID's en expliciete toestemming uitgevoerd. Voer het niet opnieuw uit voor deze bestaande provider; inspecteer de bestaande configuratie bij onderhoud.
 
 Het script maakt een aparte deployment-serviceaccount en een WIF-provider. De trust is beperkt tot die numerieke repository/eigenaar, standaardbranch, handmatige workflow en exact `.github/workflows/deploy.yml`. Rechten: Cloud Run Developer op uitsluitend `coachmate`, Artifact Registry Writer op de bestaande image-repository en Service Account User op uitsluitend het bestaande runtime-account. Geen Owner/Editor, geen toegang tot Sheets en geen Secret Manager-leesrecht voor GitHub.
 
