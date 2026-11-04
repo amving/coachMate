@@ -37,7 +37,8 @@ docker build --label "org.opencontainers.image.revision=$RELEASE_SHA" --label "o
 docker push "$IMAGE"
 DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"
 [[ "$DIGEST" == "${target[0]}@sha256:"* && "${DIGEST##*@sha256:}" =~ ^[a-f0-9]{64}$ ]] || { echo 'No verified pushed image digest.' >&2; exit 1; }
-gcloud run services update "$SERVICE" --project="$PROJECT" --region="$REGION" --image="$DIGEST" --no-traffic --quiet
+# A zero-traffic revision needs a tag to stay addressable and undergo startup checks.
+gcloud run services update "$SERVICE" --project="$PROJECT" --region="$REGION" --image="$DIGEST" --no-traffic --tag=deployment-check --quiet
 NEW_REVISION="$(gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format='value(status.latestCreatedRevisionName)')"
 [[ "$NEW_REVISION" =~ ^coachmate-[a-z0-9-]+$ && "$NEW_REVISION" != "$PREVIOUS_REVISION" ]] || { echo 'No new revision; production was not switched.' >&2; exit 1; }
 gcloud run revisions describe "$NEW_REVISION" --project="$PROJECT" --region="$REGION" --format=json > "$temp_dir/revision.json"
@@ -64,6 +65,7 @@ if ! check_release; then
  bash outputs/github-deploy/rollback.sh
  exit 1
 fi
+gcloud run services update-traffic "$SERVICE" --project="$PROJECT" --region="$REGION" --remove-tags=deployment-check --quiet
 python3 - "$RELEASE_TAG" "$RELEASE_SHA" "$DIGEST" "$PREVIOUS_REVISION" "$NEW_REVISION" "$APP_URL" > outputs/github-deploy/release.json <<'PY'
 import json,sys
 print(json.dumps(dict(zip(['tag','sha','image','previousRevision','revision','url'],sys.argv[1:])),indent=2))

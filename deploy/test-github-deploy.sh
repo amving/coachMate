@@ -21,6 +21,7 @@ gcloud() {
    ;;
   'run revisions describe '*)
    if [[ "$SCENARIO" == unhealthy ]]; then printf '{"status":{"conditions":[{"type":"Ready","status":"False"}]}}\n'
+   elif ! grep -q -- '--no-traffic --tag=deployment-check' "$FAKE_LOG"; then printf '{"status":{"conditions":[{"type":"Ready","status":"True","reason":"Retired"},{"type":"Active","status":"False","reason":"Retired"},{"type":"ContainerReady","status":"True"}]}}\n'
    else printf '{"status":{"conditions":[{"type":"Ready","status":"True"},{"type":"Active","status":"True"},{"type":"ContainerHealthy","status":"True"}]}}\n'; fi ;;
   'auth configure-docker '*|'run services update '*|'run services update-traffic '*) return 0 ;;
   *) echo 'Unexpected gcloud test call' >&2; return 99 ;;
@@ -50,12 +51,16 @@ for SCENARIO in success build-fail push-fail invalid-config wrong-digest unhealt
  dir="$test_dir/$SCENARIO";mkdir -p "$dir/deploy"
  cp "$source_script" "$dir/deploy/deploy-github.sh"
  export FAKE_LOG="$dir/calls";touch "$FAKE_LOG"
+ # Offline fixtures must never append a fake deployment to the real Actions summary.
+ export GITHUB_STEP_SUMMARY="$dir/summary"
  status=0
  if [[ "$SCENARIO" == bad-release ]]; then RELEASE_TAG='v42;not-a-command' bash "$dir/deploy/deploy-github.sh" > "$dir/result" 2>&1 || status=$?
  else bash "$dir/deploy/deploy-github.sh" > "$dir/result" 2>&1 || status=$?; fi
  if [[ "$SCENARIO" == success ]]; then
   [[ "$status" == 0 ]] || { cat "$dir/result";exit 1; }
   grep -q -- '--no-traffic' "$FAKE_LOG"
+  grep -q -- '--tag=deployment-check' "$FAKE_LOG"
+  grep -q -- '--remove-tags=deployment-check' "$FAKE_LOG"
   grep -q -- '--to-revisions=coachmate-new=100' "$FAKE_LOG"
   grep -q -- '--to-revisions=coachmate-old=100' "$dir/outputs/github-deploy/rollback.sh"
   grep -q '"tag": "v42"' "$dir/outputs/github-deploy/release.json"
