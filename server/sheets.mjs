@@ -1,3 +1,4 @@
+import {isProcessed} from '../src/result-only.ts';
 import { createHash } from 'node:crypto';
 import { schema } from './schema.mjs';
 import { sourceProblem } from './source-validation.mjs';
@@ -146,7 +147,7 @@ export function loadTeam(snapshot, teamSeasonId) {
   const fresh = createTeamState(catalog, periods, state.team.fieldSize ?? 6);
   if (state.catalog.liveMatchId !== catalog.liveMatchId) {
     if (state.live.phase !== 'Einde') throw new HttpError(422, 'Sluit de vorige wedstrijd eerst af voordat je liveMatchId wijzigt.');
-    if (state.stats.some(r => r.matchId === catalog.liveMatchId)) throw new HttpError(422, 'Deze wedstrijd is al afgesloten. Corrigeer de cijfers via Statistieken.');
+    if (isProcessed(state,catalog.liveMatchId)) throw new HttpError(422, 'Deze wedstrijd is al afgesloten. Corrigeer de cijfers via Statistieken.');
     state.live = fresh.live;
   } else {
     state.live.played = { ...fresh.live.played, ...state.live.played };

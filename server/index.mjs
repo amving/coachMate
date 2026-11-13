@@ -150,6 +150,7 @@ const server = http.createServer(async (req, res) => {
         if(action.type==='save-round-matches'&&snapshot.tables.Forms.some(f=>f.teamSeasonId===input.teamSeasonId&&Number(f.round)===action.round)&&!sameRoundRows(state.catalog.matches.filter(m=>m.availabilityRound===action.round),action.matches??[]))throw new HttpError(422,'Deze ronde heeft al een formulier. Bestaande vragen en antwoorden blijven behouden; controleer wijzigingen eerst bij het formulierbeheer.');
         const previous = state;
         state = coachReducer(state, { ...action, now: Date.now() });
+        if(action.type==='save-stats'&&previous.resultOnly?.[action.matchId])throw new HttpError(422,'Deze wedstrijd bevat alleen uitslag en scoreverloop. Corrigeer die registratie zonder aanwezigheid of minuten in te vullen.');
         if (['set-formations','set-substitution-policy','set-substitution-profiles'].includes(action.type) && state === previous) throw new HttpError(422, 'Ongeldig of verouderd wisselbeleid of spelersprofiel.');
         if(action.type==='save-round-matches'&&state===previous)throw new HttpError(422,'Controleer de wedstrijden. Verwerkte of lopende wedstrijden mogen niet worden gewijzigd en bestaande wedstrijden moeten behouden blijven.');
         if (action.type === 'prepare-match' && state === previous) throw new HttpError(422, 'Sluit de actieve wedstrijd eerst af en kies een nog niet geregistreerde wedstrijd.');
@@ -210,7 +211,9 @@ const server = http.createServer(async (req, res) => {
         extra = { FormResponses: log }; detail = { imported, invalidCodes };
       }
       const serviceOnly=['/api/forms/create','/api/forms/prepare','/api/forms/finalize','/api/forms/invite','/api/forms/link'].includes(url.pathname) || (url.pathname==='/api/forms/import' && detail.imported===0);
-      await store.write(snapshot, { ...(serviceOnly?{}:stateTables(snapshot, input.teamSeasonId, state, loaded.revision + 1)), ...extra });
+      const replacements=serviceOnly?{}:stateTables(snapshot,input.teamSeasonId,state,loaded.revision+1);
+      const resultOnlyWrite=url.pathname==='/api/action-batch'&&input.actions.every(action=>action.type==='save-result');
+      await store.write(snapshot, { ...(resultOnlyWrite?{State:replacements.State}:replacements), ...extra });
       const saved=await store.read();return { ...publicState(loadTeam(saved, input.teamSeasonId)), distribution:distributionData(saved,input.teamSeasonId), ...detail };
     });
     send(res, 200, output);

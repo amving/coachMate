@@ -1,3 +1,4 @@
+import {isProcessed} from '../src/result-only.ts';
 import { syncLiveSquad } from '../src/coach-state.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { HttpError } from './sheets.mjs';
@@ -52,7 +53,7 @@ export async function checkAvailabilityForm(auth, state, form) {
 export async function createAvailabilityForm(auth, state, round) {
   const matches = state.catalog.matches.filter(m => m.availabilityRound === round);
   if (!Number.isInteger(round) || !matches.length || !state.catalog.players.length) throw new HttpError(422, 'Voeg eerst spelers en wedstrijden aan deze ronde toe.');
-  if (matches.every(m => state.stats.some(r => r.matchId === m.id))) throw new HttpError(422, 'Deze ronde is al afgesloten.');
+  if (matches.every(m => isProcessed(state,m.id))) throw new HttpError(422, 'Deze ronde is al afgesloten.');
   const base = 'https://forms.googleapis.com/v1/forms';
   const title = `${state.catalog.clubName ? state.catalog.clubName + ' · ' : ''}${state.catalog.teamName} · ${state.catalog.seasonName} · speelronde ${round}`;
   const created = (await auth.request({url:base,method:'POST',params:{unpublished:true},retry:false,data:{info:{title,documentTitle:title}}})).data;
@@ -131,7 +132,7 @@ export function importResponses(state, form, invites, existingLog, responses) {
       let applied=0;
       for (const [matchId, questionId] of Object.entries(questions)) {
         const match=state.catalog.matches.find(m=>m.id===matchId);
-        if (!match || match.availabilityRound !== Number(form.round) || state.stats.some(s=>s.matchId===matchId) || !availabilityChoice(answer(questionId)) || !Object.hasOwn(next.availability[matchId]??{},invite.playerId)) continue;
+        if (!match || match.availabilityRound !== Number(form.round) || isProcessed(state,matchId) || !availabilityChoice(answer(questionId)) || !Object.hasOwn(next.availability[matchId]??{},invite.playerId)) continue;
         const key=`${matchId}/${invite.playerId}`;
         const marker=next.formUpdates?.[key];
         if (marker?.manual || (marker && Date.parse(marker.time)>=Date.parse(updatedAt))) continue;

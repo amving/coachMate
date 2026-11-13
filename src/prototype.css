@@ -1529,3 +1529,8 @@ h2 { font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
 .roster-drag-preview-handle{display:grid;place-items:center;flex:0 0 44px;color:#60738c;}
 .roster-drag-preview-handle svg{width:21px;height:24px;}
 .substitution-section .roster-player-main:active{background:#eaf2fc;border-radius:9px;}
+
+.result-score-inputs { display:grid; grid-template-columns:minmax(0,1fr) 16px minmax(0,1fr); gap:10px; align-items:end; }
+.result-score-inputs > span { padding-bottom:12px; text-align:center; }
+.result-only-entry textarea { width:100%; min-height:210px; padding:12px; border:1px solid var(--cm-line); border-radius:12px; background:white; color:var(--cm-ink); font:inherit; font-size:16px; line-height:1.6; }
+.result-only-entry h2 { font-size:16px; margin:0; }
