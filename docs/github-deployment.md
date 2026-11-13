@@ -15,7 +15,7 @@ De bestaande repository is `amving/coachMate`, standaardbranch `main`, repositor
 
 Na expliciete goedkeuring is het gecontroleerde installatiescript uitgevoerd via Cloud Shell. Provider `projects/496317493719/locations/global/workloadIdentityPools/coachmate-github/providers/github-production` is actief. De repository-variabelen `GCP_WIF_PROVIDER` en `GCP_DEPLOY_SERVICE_ACCOUNT` zijn opgeslagen en gecontroleerd. Het deploymentaccount is `coachmate-github-deploy@coachmate-f4c7a.iam.gserviceaccount.com` en heeft de hieronder beschreven resourcegebonden rechten.
 
-Er is nog geen productie-uitrol vanuit GitHub uitgevoerd en geen GitHub OIDC-aanmelding in een echte deploymentrun geverifieerd. Bij afronding van deze inrichting stond Cloud Run nog op `coachmate-00032-nub` met 100% verkeer. Een geslaagde checks-run of de voorbeeldsamenvatting uit offline deploymenttests is geen productie-uitrol.
+Op 13 november 2026 is V43 succesvol via GitHub CLI uitgerold: [run 43404365303](https://github.com/amving/coachMate/actions/runs/43404365303), commit `d9b13bad18d0e05ba69981920b1d26b12ee3d993`, revisie `coachmate-00036-dod`. De vorige revisie was `coachmate-00032-nub`. Build, tests, OIDC-aanmelding, image-upload en productiecontroles slaagden. De openbare app gaf HTTP 200 en Google-configuratie was aanwezig; een persoonlijke Google-login/teamselectie is daarbij niet opnieuw getest. Releaserecord en rollback zijn als deployment-artifact bewaard. Controleer de actuele toestand vóór iedere volgende uitrol.
 
 ## Eenmalige Google Cloud-configuratie
 
@@ -34,10 +34,23 @@ Er wordt niet automatisch een GitHub environment aangemaakt. Vereiste reviewers 
 
 ## Een release uitvoeren
 
-1. Review/merge de PR. Laat `CoachMate checks` slagen.
-2. Maak een vaste tag op die gecontroleerde commit, bijvoorbeeld `v42`. De eerste release via deze route moet de workflows en deploymentscripts bevatten.
-3. Open Actions → CoachMate production → Run workflow op de standaardbranch. Vul de releasetag in en bevestig met `DEPLOY`.
-4. Controleer de workflow en de app na uitrol. De workflow toont commit/revisie en bewaart het deployment-artifact met terugzetopdracht.
+Gebruik voortaan Git en GitHub CLI; handmatige uploads en browserbediening vervallen. GitHub Desktop kan de gebruiker daarnaast gebruiken om diffs en geschiedenis te bekijken. GitHub CLI is als `amving` aangemeld met opslag in de Windows-keyring. Toon geen tokens. Na een nieuwe terminalstart is `gh` beschikbaar via gebruikers-PATH; een al draaiend proces kan nog het volledige pad onder `%LOCALAPPDATA%/Programs/GitHubCLI/2.104.0/bin/gh.exe` nodig hebben.
+
+1. Begin vanaf bijgewerkte `main` en maak één branch per wijziging, bijvoorbeeld `codex/beschikbaarheid-fix`. Behoud andermans lokale wijzigingen. Bekijk de diff, voer `node scripts/check-repository.mjs`, `npm run build` en de relevante tests uit. Voor de volledige testsuite moet de build al bestaan.
+2. Stage alleen bedoelde bestanden, commit met een beschrijving van het resultaat en push de branch. Maak de PR via `gh pr create --body-file <bestand>` met probleem, wijziging en validatie. Exports, logs, credentials en wedstrijddata blijven lokaal.
+3. Volg CI via `gh pr checks <nummer> --watch`. Controleer dat het resultaat bij de actuele PR-commit hoort. Na review/akkoord en geslaagde checks: merge via `gh pr merge <nummer> --squash --match-head-commit <gecontroleerde-PR-SHA>`. Branchbescherming is een afzonderlijke repository-instelling; deze afspraken vormen op zichzelf geen technische bescherming.
+4. Werk lokale `main` bij met `git pull --ff-only`. Controleer de checks op de resulterende main-commit via `gh run list --workflow check.yml --commit <SHA>`. Maak een nieuwe vaste tag, bijvoorbeeld `git tag -a v44 <SHA> -m "CoachMate V44: ..."`, en push uitsluitend die tag. Tags worden nooit verplaatst of met force overschreven. Een nieuwe poging met dezelfde code gebruikt dezelfde tag; alleen gewijzigde code krijgt een nieuwe versie.
+5. Start uitsluitend na expliciet release-akkoord de bestaande productie-workflow:
+
+   ```sh
+   gh workflow run deploy.yml --repo amving/coachMate --ref main -f release=v44 -f confirmation=DEPLOY
+   ```
+
+   Gebruik de door GitHub teruggegeven run-ID. Als de CLI alleen bevestigt dat de workflow gestart is, zoek de juiste nieuwe `workflow_dispatch`-run op aan de hand van starttijd/branch/commit; neem niet blind de laatste run van een ander proces.
+6. Volg precies die run met `gh run watch <run-ID> --repo amving/coachMate --interval 15 --exit-status`. Bij fouten: `gh run view <run-ID> --repo amving/coachMate --log-failed`. Herstart nooit blind en zet geen beveiligings- of gezondheidscontrole uit.
+7. Download `deployment-<tag>-<run-ID>` met `gh run download <run-ID> --name deployment-<tag>-<run-ID> --dir outputs/deployment-<tag>-<run-ID>`. Vergelijk `release.json` met de aangevraagde tag/commit en controleer `rollback.sh`. Controleer de openbare app en `/api/session` zonder geheime waarden te loggen. Rapporteer pas daarna dat de release live staat, met runlink en revisie. Test een persoonlijke sessie afzonderlijk indien nodig.
+
+Een commit of merge is geen uitrol. Nieuwe wijzigingen mogen samen in een volgende release worden gebundeld; niet elke commit krijgt een nieuw V-nummer. In de chat is het normale ritme: wijziging aanvragen → PR en geslaagde checks bekijken → akkoord op merge/release → CLI-uitrol en controle. Eén expliciet verzoek voor een concrete release geldt als akkoord voor die uitrol en hoeft niet opnieuw bevestigd te worden.
 
 De workflow vereist alleen Actions read toegang tot de broncode plus OIDC in de deploymentjob. PR's krijgen geen Google-identiteit. De rollback zet alleen de applicatierevisie terug, niet de gedeelde Google-data. Apps Script blijft een afzonderlijk beheerd onderdeel en wordt niet automatisch uitgerold.
 
