@@ -1,3 +1,4 @@
+import {isProcessed} from '../result-only.ts';
 import {validatePreparedFormation} from '../formations.ts';
 import { createTeamState, demoCatalog, goalsOnlyMatch, type CoachState, type Availability } from '../coach-state.ts';
 import { adaptMatchState, dateKey } from './adapter.ts';
@@ -44,7 +45,7 @@ export function suggestMatchKeepers(state:CoachState,matchId:string,presentIds:s
 // Used for the local preview and replay of the compact confirmation command.
 export function prepareSquad(state:CoachState,selection:SquadSelection,now:number):CoachState {
   const c=state.catalog??demoCatalog(),{matchId,statuses,keeperIds,startingKeeperId}=selection;
-  if(c.archived||!Number.isSafeInteger(now)||now<0||!c.matches.some(m=>m.id===matchId)||state.stats.some(r=>r.matchId===matchId))throw new Error('Deze wedstrijd is alleen-lezen.');
+  if(c.archived||!Number.isSafeInteger(now)||now<0||!c.matches.some(m=>m.id===matchId)||isProcessed(state,matchId))throw new Error('Deze wedstrijd is alleen-lezen.');
   if(c.liveMatchId!==matchId&&state.live.phase!=='Einde')throw new Error('Sluit de actieve wedstrijd eerst af.');
   if(c.liveMatchId===matchId&&(state.live.elapsedMs!==0||state.live.runningSince!==null||state.live.phase!=='Spelen'||state.live.goals.length||state.live.awayGoals.length||state.live.swaps.length))throw new Error('De wedstrijd is al begonnen. Pas de aanwezigheid en keeper aan bij Live.');
   if(!statuses||typeof statuses!=='object'||Array.isArray(statuses)||Object.keys(statuses).length!==c.players.length||!c.players.every(p=>['available','unavailable'].includes(statuses[p.id])))throw new Error('Bevestig voor iedere speler aanwezig of afwezig.');

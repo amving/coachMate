@@ -1,4 +1,5 @@
 import {validateFormationCatalog,validateFormations,validatePreparedFormation,type Formation} from './formations.ts';
+import { isProcessed, validateResultOnly, type ResultOnlyMatch } from './result-only.ts';
 import { normalizePolicy, revisePolicy, type SubstitutionPolicy } from './substitution/policy.ts';
 import type { Occupancy } from './substitution/types.ts';
 import type { PlayerProfile } from './substitution/types.ts';
@@ -43,6 +44,7 @@ export type LiveMatch = {
 export type Catalog = { clubId?: string; clubName?: string; seasonId: string; seasonName: string; teamSeasonId: string; teamName: string; archived: boolean; players: Player[]; matches: Match[]; liveMatchId: string };
 export const demoCatalog = (): Catalog => ({ seasonId: "2026-2027", seasonName: "2026/2027", teamSeasonId: "demo-jo10-1", teamName: "JO10-1", archived: false, players, matches, liveMatchId: LIVE_MATCH_ID });
 export type CoachState = {
+  resultOnly?: Record<string, ResultOnlyMatch>;
   formUpdates?: Record<string,{time:string;manual?:boolean}>;
   assistant?: Record<string, AdviceSession>;
   committedBatches?: string[];
@@ -59,6 +61,7 @@ export type CoachState = {
   live: LiveMatch;
 };
 export type Action = AdviceAction
+  | {type:'save-result';matchId:string;result:ResultOnlyMatch;expected:string|null}
   | {type:"set-formations";formations:Formation[];replaceDefaults?:true}
   | { type:'set-substitution-profiles'; profiles:Record<string,PlayerProfile> }
   | { type: "set-substitution-policy"; expectedVersion: number; policy?: SubstitutionPolicy }
@@ -144,6 +147,8 @@ export function scoreInVenueOrder(match: Pick<Match,"venue">, goalsFor: number, 
 
 /** Read known final scores from both historical imports and recorded Live matches. */
 export function recordedMatchResult(state:CoachState,matchId:string):{goalsFor:number;goalsAgainst:number}|null {
+  const resultOnly=state.resultOnly?.[matchId];
+  if(resultOnly)return {goalsFor:resultOnly.goalsFor,goalsAgainst:resultOnly.goalsAgainst};
   const saved=state.matchResults?.[matchId];
   if(saved)return {goalsFor:saved.goalsFor,goalsAgainst:saved.goalsAgainst};
   const liveId=(state.catalog??demoCatalog()).liveMatchId;
@@ -153,6 +158,7 @@ export function recordedMatchResult(state:CoachState,matchId:string):{goalsFor:n
 
 export function totalGoals(state: CoachState): number {
   return state.stats.reduce((sum, row) => sum + row.goals, 0)
+    + Object.values(state.resultOnly??{}).reduce((sum,result)=>sum+result.goalsFor,0)
     + Object.values(state.opponentOwnGoals).reduce((sum, count) => sum + count, 0)
     + [...new Set(state.stats.map(r=>r.matchId))].reduce((sum,id)=>sum+(state.liveArchive?.[id]?.goals.filter(g=>!g.ownGoal&&g.playerId===null).length??0),0);
 }
@@ -178,6 +184,8 @@ export function teamMatchMinutes(state: CoachState): number {
     return sum + (goalsOnlyMatch(state, id) ? MATCH_DURATION_MINUTES : tracked ? tracked.elapsedMs / 60000 : state.matchResults?.[id]?.duration ?? MATCH_DURATION_MINUTES);
   }, 0);
 }
+
+export function unknownMatchDurationCount(state:CoachState):number {return Object.keys(state.resultOnly??{}).length;}
 
 // Account for wall-clock time, including background tabs and page reloads.
 export function settleLive(live: LiveMatch, now: number): LiveMatch {
@@ -268,6 +276,13 @@ function reduceCoachState(state: CoachState, action: Action): CoachState {
   if (archived && action.type !== "clock") return state;
   const live = state.live;
   switch (action.type) {
+    case 'save-result': {
+      if(!matches.some(m=>m.id===action.matchId)||action.matchId===LIVE_MATCH_ID||state.stats.some(r=>r.matchId===action.matchId)||state.matchResults?.[action.matchId]||state.liveArchive?.[action.matchId]||!validateResultOnly(action.result,state.catalog??demoCatalog()))return state;
+      const existing=state.resultOnly?.[action.matchId];
+      if(JSON.stringify(existing)===JSON.stringify(action.result))return state;
+      if((existing?JSON.stringify(existing):null)!==action.expected)return state;
+      return {...state,resultOnly:{...state.resultOnly,[action.matchId]:structuredClone(action.result)}};
+    }
     case 'set-formations': {
       if(action.replaceDefaults!==undefined&&action.replaceDefaults!==true)return state;
       try{if(action.replaceDefaults)validateFormationCatalog(action.formations);else validateFormations(action.formations);}catch{return state;}
@@ -289,7 +304,7 @@ function reduceCoachState(state: CoachState, action: Action): CoachState {
       } catch { return state; }
     }
     case "prepare-match": {
-      if (live.phase !== "Einde" && LIVE_MATCH_ID || !players.length || action.matchId === LIVE_MATCH_ID || !matches.some(m => m.id === action.matchId) || state.stats.some(r => r.matchId === action.matchId)) return state;
+      if (live.phase !== "Einde" && LIVE_MATCH_ID || !players.length || action.matchId === LIVE_MATCH_ID || !matches.some(m => m.id === action.matchId) || isProcessed(state, action.matchId)) return state;
       const catalog = { ...(state.catalog ?? demoCatalog()), liveMatchId: action.matchId };
       return syncLiveSquad({ ...state, catalog, live: createTeamState(catalog, state.team.periods, state.team.fieldSize ?? 6).live });
     }
@@ -366,20 +381,20 @@ function reduceCoachState(state: CoachState, action: Action): CoachState {
       } };
     }
     case "availability-batch": {
-      if (state.stats.some(r=>r.matchId===action.matchId) || !matches.some(m=>m.id===action.matchId) || !action.changes || typeof action.changes!=="object" || Array.isArray(action.changes)) return state;
+      if (isProcessed(state,action.matchId) || !matches.some(m=>m.id===action.matchId) || !action.changes || typeof action.changes!=="object" || Array.isArray(action.changes)) return state;
       const changes=Object.entries(action.changes);
       if (!changes.length || !changes.every(([id,value])=>players.some(p=>p.id===id) && ["available","unavailable","pending"].includes(value))) return state;
       return syncLiveSquad({...state,availability:{...state.availability,[action.matchId]:{...state.availability[action.matchId],...action.changes}}},action.now);
     }
     case "availability":
-      if (state.stats.some(r => r.matchId === action.matchId)) return state;
+      if (isProcessed(state, action.matchId)) return state;
       if (!matches.some(m => m.id === action.matchId) || !players.some(p => p.id === action.playerId) || !["available", "unavailable", "pending"].includes(action.value)) return state;
       return syncLiveSquad({ ...state, availability: { ...state.availability, [action.matchId]: { ...state.availability[action.matchId], [action.playerId]: action.value } } }, action.now);
     case "save-round-matches": {
       if(!Number.isInteger(action.round)||action.round<1||action.round>currentRound(state)+1||!Array.isArray(action.matches)||!action.matches.length||action.matches.some(m=>!m||typeof m!=='object'))return state;
       const supplied=action.matches,existing=matches.filter(m=>m.availabilityRound===action.round);
       if(new Set(supplied.map(m=>m.id)).size!==supplied.length||existing.some(m=>!supplied.some(row=>row.id===m.id))||supplied.some(m=>m.availabilityRound!==action.round||!/^\d{4}-\d{2}-\d{2}$/.test(m.date)||!Number.isFinite(Date.parse(m.date+'T12:00:00Z'))||new Date(m.date+'T12:00:00Z').toISOString().slice(0,10)!==m.date||!/^([01]\d|2[0-3]):[0-5]\d$/.test(m.time)||matches.some(old=>old.id===m.id&&old.availabilityRound!==action.round)))return state;
-      if(supplied.some(m=>{const old=matches.find(row=>row.id===m.id);return old&&(state.stats.some(r=>r.matchId===m.id)||m.id===LIVE_MATCH_ID&&(live.elapsedMs>0||live.runningSince!==null))&&['opponent','date','shortDate','time','venue','pool'].some(key=>old[key as keyof Match]!==m[key as keyof Match]);}))return state;
+      if(supplied.some(m=>{const old=matches.find(row=>row.id===m.id);return old&&(isProcessed(state,m.id)||m.id===LIVE_MATCH_ID&&(live.elapsedMs>0||live.runningSince!==null))&&['opponent','date','shortDate','time','venue','pool'].some(key=>old[key as keyof Match]!==m[key as keyof Match]);}))return state;
       const catalog={...(state.catalog??demoCatalog()),matches:[...matches.map(m=>supplied.find(row=>row.id===m.id)??m),...supplied.filter(m=>!matches.some(old=>old.id===m.id))]};
       try{validateCatalog(catalog);}catch{return state;}
       return {...state,catalog,currentRound:Math.max(currentRound(state),action.round),availability:{...state.availability,...Object.fromEntries(supplied.filter(m=>!matches.some(old=>old.id===m.id)).map(m=>[m.id,Object.fromEntries(players.map(p=>[p.id,'pending' as Availability]))]))}};
@@ -394,6 +409,7 @@ function reduceCoachState(state: CoachState, action: Action): CoachState {
         ...Object.fromEntries(action.matches.map(m => [m.id, Object.fromEntries(players.map(p => [p.id, "pending" as Availability]))])) } };
     }
     case "save-stats":
+      if(state.resultOnly?.[action.matchId])return state;
       if ((action.matchId === LIVE_MATCH_ID && live.phase !== "Einde") || !validateRows(action.rows, action.matchId, state.catalog)
         || action.rows.some(row => Math.max(row.minutes, row.keeperMinutes) > statsMinuteLimit(state, action.matchId))) return state;
       if (action.opponentOwnGoals !== undefined && (!Number.isInteger(action.opponentOwnGoals) || action.opponentOwnGoals < 0 || action.opponentOwnGoals > 99)) return state;
@@ -453,6 +469,7 @@ export function parseState(raw: string): CoachState {
   if(data.team?.formationCatalog!==undefined)validateFormationCatalog(data.team.formationCatalog);
   if(data.team?.fullStatsFromRound!==undefined&&(!Number.isInteger(data.team.fullStatsFromRound)||data.team.fullStatsFromRound<1||data.team.fullStatsFromRound>100))throw new Error('Ongeldige statistiekenperiode.');
   validateCatalog(catalog);
+  if(data.resultOnly!==undefined&&(!data.resultOnly||typeof data.resultOnly!=='object'||Array.isArray(data.resultOnly)||Object.entries(data.resultOnly).some(([id,result])=>!catalog.matches.some(m=>m.id===id)||id===catalog.liveMatchId||data.stats?.some(r=>r.matchId===id)||data.matchResults?.[id]||data.liveArchive?.[id]||!validateResultOnly(result,catalog))))throw new Error('Ongeldige uitslagregistratie: controleer scoreverloop, spelers en dubbele verwerking.');
   const { players, matches } = catalog;
   const playerId = (id: unknown) => players.some(p => p.id === id);
   const number = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;

@@ -1,7 +1,7 @@
 import { coachReducer, parseState, type Action, type CoachState } from './coach-state.ts';
 
 export const localActionTypes = new Set(['assistant-prepare','assistant-plan','assistant-decision','assistant-adjust','assistant-execute','prepare-match', 'toggle-clock', 'phase', 'set-period', 'goal', 'away-goal', 'edit-goal', 'undo-goal', 'keeper', 'swap']);
-const batchTypes = new Set([...localActionTypes, 'set-formations','finish', 'set-periods', 'set-field-size','set-substitution-policy','set-substitution-profiles']);
+const batchTypes = new Set(['save-result',...localActionTypes, 'set-formations','finish', 'set-periods', 'set-field-size','set-substitution-policy','set-substitution-profiles']);
 
 // Replay original event times: using upload time would lose playing/rest time.
 export function applyActionBatch(state: CoachState, actions: Action[], now = Date.now()): CoachState {
@@ -16,6 +16,7 @@ export function applyActionBatch(state: CoachState, actions: Action[], now = Dat
     }
     const previous = next;
     next = coachReducer(next, action);
+    if(action.type==='save-result'&&JSON.stringify(next.resultOnly?.[action.matchId])!==JSON.stringify(action.result))throw new Error('De uitslag is ongeldig of gewijzigd. Je concept blijft behouden.');
     if((action.type.startsWith('assistant-')||action.type==='set-formations'||action.type==='set-substitution-policy'||action.type==='set-substitution-profiles')&&next===previous) {
       const isReplay=action.type.startsWith('assistant-')&&'eventId' in action&&Object.values(previous.assistant??{}).some(s=>s.events.some(e=>e.id===action.eventId));
       if(!isReplay)throw new Error('Het wisseladvies of beleid is verouderd of ongeldig. Je concept blijft behouden.');

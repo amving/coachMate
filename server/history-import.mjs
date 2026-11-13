@@ -1,3 +1,4 @@
+import {isProcessed} from '../src/result-only.ts';
 import { fingerprint, HttpError } from './sheets.mjs';
 import { parseState, goalsOnlyMatch } from '../src/coach-state.ts';
 
@@ -33,7 +34,7 @@ export function importHistory(state, matches, options = {}) {
       const sourceHash = fingerprint([match, options]);
       const prior = state.matchResults?.[match.matchId];
       if (prior?.sourceHash === sourceHash) { report.push({matchId:match.matchId,status:'al verwerkt'}); continue; }
-      if (state.stats.some(r => r.matchId === match.matchId)) throw new Error('Er bestaan al cijfers; deze worden niet overschreven.');
+      if (isProcessed(state,match.matchId)) throw new Error('Er bestaan al cijfers; deze worden niet overschreven.');
       const score = /^(\d{1,2})\s*[-–:]\s*(\d{1,2})$/.exec(clean(match.Stand));
       if (!score || !['Thuis','Uit'].includes(match.venue)) throw new Error('Controleer stand en thuis/uit.');
       const goalsFor = Number(score[match.venue === 'Thuis' ? 1 : 2]);
