@@ -24,8 +24,17 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:unit
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npx playwright test --config playwright.matchday.config.ts
       - run: bash deploy/test-cloud-shell.sh
       - run: bash deploy/test-github-deploy.sh
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: matchday-failure-${{ github.sha }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: frontend-preview-${{ github.sha }}

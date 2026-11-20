@@ -41,6 +41,8 @@ test('returning from Settings preserves history and explicit player match links 
 
 test('reselecting Statistics restores the framed screen after browser focus scrolls its clipped ancestor',async({page})=>{
  await page.setViewportSize({width:1100,height:1100});await page.goto('/?design=ios&venue=away&case=stats-reselect-frame');await nav(page,'Statistieken').click();
- const screen=page.getByTestId('device-screen');await screen.evaluate(el=>{el.scrollTop=338;});expect(await screen.evaluate(el=>el.scrollTop)).toBeGreaterThan(0);
+ // The protected runtime prevents this ancestor from scrolling at all.
+ // Reselecting the tab must preserve that invariant and restore content top.
+ const screen=page.getByTestId('device-screen');await screen.evaluate(el=>{el.scrollTop=338;});expect(await screen.evaluate(el=>el.scrollTop)).toBe(0);
  await nav(page,'Statistieken').click();await expect(async()=>expect(await screen.evaluate(el=>el.scrollTop)).toBe(0)).toPass();await expect(page.locator('.app-header')).toBeInViewport();await expect(page.locator('.cumulative-summary')).toBeInViewport();await expect(page.getByTestId('keyboard-dock')).toHaveAttribute('data-visible','false');
 });
