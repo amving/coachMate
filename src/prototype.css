@@ -1534,3 +1534,32 @@ h2 { font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
 .result-score-inputs > span { padding-bottom:12px; text-align:center; }
 .result-only-entry textarea { width:100%; min-height:210px; padding:12px; border:1px solid var(--cm-line); border-radius:12px; background:white; color:var(--cm-ink); font:inherit; font-size:16px; line-height:1.6; }
 .result-only-entry h2 { font-size:16px; margin:0; }
+
+/* The family view shares the app palette and leaves device chrome to the runtime. */
+.parent-portal{display:flex;flex-direction:column;min-height:0}
+.parent-portal-header{display:grid;gap:3px;padding:calc(var(--mobile-safe-area-top, 0px) + 15px) 20px 12px;border-bottom:1px solid var(--line,#dce1e8);background:var(--surface,#fff)}
+.parent-portal-header small{font-size:12px;color:var(--muted,#586475)}
+.parent-portal-header strong{font-size:22px}
+.parent-portal .parent-scroll{flex:1;min-height:0}
+.parent-content{display:grid;align-content:start;gap:14px;padding:16px 16px max(24px,env(safe-area-inset-bottom))}
+.parent-content h1,.parent-content h2,.parent-content h3,.parent-content p{margin:0}
+.parent-child,.parent-card,.parent-access-settings,.parent-invitation-link{display:grid;gap:10px}
+.parent-child{padding-bottom:10px}
+.parent-content h1{font-size:22px}
+.parent-content h2{font-size:16px}
+.parent-content h3{font-size:16px}
+.parent-card{background:var(--surface,#fff);border:1px solid var(--line,#dce1e8);border-radius:14px;padding:14px}
+.parent-card p,.parent-history-row small,.parent-link-row small{color:var(--muted,#586475);font-size:14px}
+.parent-card a{display:flex;align-items:center;justify-content:center;text-align:center;text-decoration:none}
+.parent-answer-options{display:flex;flex-wrap:wrap;gap:7px}
+.parent-answer-options button{flex:1 1 82px;min-height:44px;white-space:normal}
+.parent-answer-options button[aria-pressed=true]{border-color:#1172e8;color:#074caa;background:#eaf3ff}
+.parent-confirmed{padding:10px 12px;background:#e9f7ef;color:#124e32;border-radius:12px}
+.parent-portal-actions{display:flex;flex-wrap:wrap;gap:12px}
+.parent-history-row{display:grid;gap:4px;padding-top:9px;margin-top:8px;border-top:1px solid var(--line,#dce1e8)}
+.parent-access-settings{padding:12px 14px}
+.parent-access-settings h3{font-size:15px;margin:4px 0}
+.parent-link-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0}
+.parent-link-row span{display:grid;min-width:0;gap:4px;overflow-wrap:anywhere}
+.parent-link-row button{min-height:44px}
+.parent-response-review{margin-top:12px}
