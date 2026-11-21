@@ -87,6 +87,7 @@ test('reopening and refreshing hides a shared completed match while retaining a 
  await nav(page,'Statistieken').click();
  await expect(page.getByTestId('season-match-minutes')).toHaveText('50');
  await expect(page.getByRole('button',{name:`Statistieken ${scorer}`,exact:true})).toContainText('3goals');
+ await page.getByRole('button',{name:'Melding sluiten',exact:true}).click();
  await page.getByRole('button',{name:'Bekijk en corrigeer historische wedstrijdgegevens',exact:true}).click();
  const history=page.locator('.history-grouped-list .history-row').filter({hasText:oldMatch.opponent});
  await expect(history).toHaveCount(1);
