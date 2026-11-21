@@ -1,6 +1,7 @@
 import {test,expect,type Page} from '@playwright/test';
 import {createTeamState,demoCatalog,type CoachState} from '../src/coach-state';
 import {applyActionBatch} from '../src/action-batch';
+import {journalKey} from '../src/local-cache';
 
 test.use({viewport:{width:390,height:844},hasTouch:true,isMobile:true});
 test.setTimeout(60000);
@@ -47,6 +48,52 @@ test('goal and opponent confirmation stay reachable with touch on a short screen
 test('a source warning leaves the Goal opener reachable on a phone',async({page})=>{
  await open(page,fixture(),true);await nav(page,'Live').tap();await expect(page.getByRole('button',{name:'Melding sluiten',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Goal voor Speler of eigen doelpunt',exact:true}).tap({timeout:5000});await expect(page.getByRole('dialog')).toBeVisible();
+});
+
+test('an externally saved score clears the old live concept notices and keeps the next match editable',async({page})=>{
+ const initial=fixture(),catalog=initial.catalog!,account='coach@example.test';
+ catalog.matches.push({...catalog.matches[1],id:'following',date:'2030-11-15',shortDate:'15 nov',opponent:'Volgende club'});
+ initial.availability.following={...initial.availability.next};
+ const distribution={forms:[],invites:[],jobs:[],deliveries:[],mailReady:false};
+ const uploads:string[]=[];
+ let latest=initial;
+ await page.clock.setFixedTime(new Date('2030-11-07T09:00:00Z'));
+ await page.route('http://127.0.0.1:4175/**',async route=>{
+  const request=route.request(),path=new URL(request.url()).pathname;
+  if(request.method()==='POST')uploads.push(path);
+  if(path==='/api/session')return route.fulfill({json:{configured:true,authenticated:true,email:account,csrf:'test'}});
+  if(path==='/api/forms')return route.fulfill({json:distribution});
+  return route.fulfill({json:{state:latest,revision:latest===initial?1:2,sourceToken:latest===initial?'before':'after',teams:[catalog],seasons:[],distribution}});
+ });
+ await page.goto('/?device=real');
+ await nav(page,'Live').tap();
+ await page.getByRole('button',{name:'Goal voor Speler of eigen doelpunt',exact:true}).tap();
+ await page.getByRole('button',{name:'Kies Daan',exact:true}).tap();
+ await page.getByRole('button',{name:/^Registreer · Daan ·/}).tap();
+ const notice=page.getByRole('region',{name:'Lokaal wedstrijdconcept'});
+ await expect(notice).toBeVisible();
+ const key=journalKey(account,catalog.teamSeasonId);
+ const raw=await page.evaluate(key=>localStorage.getItem(key)!,key);
+ latest={...initial,catalog:{...catalog,liveMatchId:'past'},live:{...initial.live,phase:'Einde'},
+  resultOnly:{next:{goalsFor:7,goalsAgainst:5,events:[]}}};
+ await nav(page,'Overzicht').tap();
+ await page.getByRole('button',{name:'Vernieuwen',exact:true}).tap();
+ await expect(page.getByText('Volgende club',{exact:true})).toBeVisible();
+ await expect(notice).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'Melding sluiten',exact:true})).toHaveCount(0);
+ const backup=key+':backup:'+JSON.parse(raw).id+':processed-match';
+ expect(await page.evaluate(([key,backup])=>[localStorage.getItem(key),localStorage.getItem(backup)],[key,backup])).toEqual([null,raw]);
+ await page.reload();
+ await nav(page,'Live').tap();
+ await expect(page.getByRole('heading',{name:'Geen actieve wedstrijd',exact:true})).toBeVisible();
+ await expect(notice).toHaveCount(0);
+ await expect(page.getByRole('region',{name:'Opslagstatus'})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'Melding sluiten',exact:true})).toHaveCount(0);
+ await page.getByLabel('Live wedstrijd kiezen',{exact:true}).selectOption('following');
+ await page.getByRole('button',{name:'Deze wedstrijd voorbereiden',exact:true}).tap();
+ await expect(page.getByTestId('score')).toHaveText('0 – 0');
+ await expect(notice).toBeVisible();
+ expect(uploads).toEqual([]);
 });
 for(const venue of ['Thuis','Uit'] as const)test(`${venue}: substitution, both own goals and final statistics retain attribution`,async({page})=>{
  const initial=fixture();initial.catalog!.matches.find(m=>m.id==='next')!.venue=venue;await open(page,initial);await nav(page,'Live').tap();
