@@ -1431,7 +1431,16 @@ export default function Prototype() {
   const [invites, setInvites] = useState<FormInvite[]>([]);
   const [formJobs,setFormJobs]=useState<FormJob[]>([]),[deliveries,setDeliveries]=useState<FormDelivery[]>([]),[mailReady,setMailReady]=useState(false);
   const serviceToken=useRef("");
-  function applyForms(data:any){setFormLinks(data.forms);setInvites(data.invites);setFormJobs(data.jobs??[]);setDeliveries(data.deliveries??[]);setMailReady(data.mailReady===true);if(serviceToken.current&&serviceToken.current===data.serviceDataToken&&data.revision===revision.current.revision&&!journalRef.current)revision.current.sourceToken=data.sourceToken;serviceToken.current=data.serviceDataToken??"";}
+  function applyForms(data:any){
+    setFormLinks(data.forms);setInvites(data.invites);setFormJobs(data.jobs??[]);setDeliveries(data.deliveries??[]);setMailReady(data.mailReady===true);
+    const current=revision.current;
+    // A Forms status response cannot acknowledge parent answers the coach has not loaded.
+    if(serviceToken.current&&serviceToken.current===data.serviceDataToken&&data.revision===current.revision&&!journalRef.current&&
+       typeof data.sourceToken==='string'&&data.sourceToken.split(':parent:')[1]===current.sourceToken?.split(':parent:')[1]) {
+      current.sourceToken=data.sourceToken;
+    }
+    serviceToken.current=data.serviceDataToken??"";
+  }
   async function refreshDistribution(){if(pending.current)return;const data=await request(`/api/forms?team=${encodeURIComponent(stateRef.current.catalog!.teamSeasonId)}`);applyForms(data);const job=data.jobs?.find((job:any)=>job.status==="awaiting-mapping");if(job&&!journalRef.current)await mutate("/api/forms/finalize",{formId:job.formId});}
   const api = (import.meta as ImportMeta & { env: Record<string, string> }).env.VITE_API_ORIGIN || (["127.0.0.1", "localhost"].includes(window.location.hostname) ? "http://127.0.0.1:4175" : window.location.origin);
   async function request(path:string,data?:unknown){

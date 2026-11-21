@@ -36,8 +36,7 @@ const parentPortal = parentEnabled ? new ParentPortal(
     catch (error) { if (error instanceof HttpError && error.status===404) return null; throw error; }
   }, parentTeams, origin,
 ) : null;
-async function loadCoachTeam(snapshot, team) {
-  const loaded = loadTeam(snapshot, team);
+async function loadCoachTeam(snapshot, team, loaded = loadTeam(snapshot, team)) {
   if (!parentPortal?.enabled(team)) return loaded;
   const answers = await parentPortal.coachResponses(team);
   return {...projectParentAnswers(loaded,answers), parentPortalEnabled:true};
@@ -201,7 +200,7 @@ const server = http.createServer(async (req, res) => {
     const output = await serial(async () => {
       const snapshot = await store.read();
       const raw = loadTeam(snapshot,input.teamSeasonId);
-      const loaded = await loadCoachTeam(snapshot,input.teamSeasonId);
+      const loaded = await loadCoachTeam(snapshot,input.teamSeasonId,raw);
       if (loaded.state.catalog.archived) throw new HttpError(403, 'Dit seizoen is gearchiveerd en alleen leesbaar.');
       if(url.pathname==='/api/forms/invite' && snapshot.tables.FormDeliveries.some(row=>row.batchId===input.batchId)) {
         const repeated=queueInvitationBatch(snapshot,loaded.state,input);
