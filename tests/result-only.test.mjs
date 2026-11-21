@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createTeamState,demoCatalog,coachReducer,parseState,totalGoals,teamMatchMinutes,unknownMatchDurationCount,recordedMatchResult,individualStatsRows} from '../src/coach-state.ts';
+import {createTeamState,demoCatalog,coachReducer,parseState,totalGoals,teamMatchMinutes,standardMatchDurationCount,recordedMatchResult,individualStatsRows} from '../src/coach-state.ts';
 import {parseScoreEvents,validateResultOnly,processedMatchIds,seasonGoalRows,scoreEventsText} from '../src/result-only.ts';
 import {applyActionBatch} from '../src/action-batch.ts';
 import {loadTeam,stateTables} from '../server/sheets.mjs';
@@ -14,7 +14,7 @@ test('result-only records contain only supplied scores/events and survive Sheets
  const s=fixture(),before=structuredClone(s),a=action(s),next=applyActionBatch(s,[a]);
  assert.deepEqual(next.resultOnly[a.matchId],a.result);assert.equal(a.result.events.length,6);assert.deepEqual(a.result.events[0],{scoreFor:0,scoreAgainst:3,playerId:null,minute:null,ownGoal:false});
  for(const key of Object.keys(before))assert.deepEqual(next[key],before[key],key);
- assert.equal(next.stats.length,0);assert.equal(totalGoals(next),4);assert.equal(processedMatchIds(next).size,1);assert.equal(teamMatchMinutes(next),0);assert.equal(unknownMatchDurationCount(next),1);assert.deepEqual(individualStatsRows(next),[]);
+ assert.equal(next.stats.length,0);assert.equal(totalGoals(next),4);assert.equal(processedMatchIds(next).size,1);assert.equal(teamMatchMinutes(next),50);assert.equal(standardMatchDurationCount(next),1);assert.deepEqual(individualStatsRows(next),[]);
  assert.equal(seasonGoalRows(next).find(r=>r.playerId==='p02').goals,2);assert.deepEqual(recordedMatchResult(next,a.matchId),{goalsFor:4,goalsAgainst:4});
  const tables=Object.fromEntries(Object.keys(schema).map(k=>[k,[]]));tables.Seasons=[{seasonId:s.catalog.seasonId,name:s.catalog.seasonName,archived:false}];tables.TeamSeasons=[{teamSeasonId:s.catalog.teamSeasonId,seasonId:s.catalog.seasonId,teamName:s.catalog.teamName,periods:4,liveMatchId:s.catalog.liveMatchId}];tables.Players=s.catalog.players.map(p=>({...p,playerId:p.id,teamSeasonId:s.catalog.teamSeasonId}));tables.Matches=s.catalog.matches.map(m=>({...m,matchId:m.id,teamSeasonId:s.catalog.teamSeasonId}));const snapshot={tables};
  const replacements=stateTables(snapshot,s.catalog.teamSeasonId,next,3);assert.equal(replacements.MatchStats.length,0);Object.assign(tables,replacements);const loaded=loadTeam(snapshot,s.catalog.teamSeasonId);assert.deepEqual(loaded.state.resultOnly,next.resultOnly);assert.equal(loaded.revision,3);assert.equal(loaded.state.stats.length,0);
@@ -39,12 +39,12 @@ test('score-only, optional minutes and own goals preserve unknowns and player to
  const s=fixture(),r={goalsFor:2,goalsAgainst:1,events:parseScoreEvents("1-0 Mats '5\n1-1 Siem (e.d.)\n2-1 (e.d.)",s.catalog)};
  assert.ok(validateResultOnly(r,s.catalog));assert.equal(r.events[0].minute,5);assert.equal(r.events[1].minute,null);assert.equal(scoreEventsText(r,s.catalog),"1-0 Mats '5\n1-1 Siem (e.d.)\n2-1 (e.d.)");
  const next=coachReducer(s,action(s,r));assert.equal(totalGoals(next),2);assert.equal(seasonGoalRows(next).find(r=>r.playerId==='p04').goals,0);assert.equal(seasonGoalRows(next).find(r=>r.playerId==='p02').goals,1);
- const onlyScore=coachReducer(s,action(s,{goalsFor:2,goalsAgainst:1,events:[]}));assert.equal(totalGoals(onlyScore),2);assert.deepEqual(seasonGoalRows(onlyScore),[]);assert.equal(unknownMatchDurationCount(onlyScore),1);
+ const onlyScore=coachReducer(s,action(s,{goalsFor:2,goalsAgainst:1,events:[]}));assert.equal(totalGoals(onlyScore),2);assert.deepEqual(seasonGoalRows(onlyScore),[]);assert.equal(standardMatchDurationCount(onlyScore),1);
  assert.throws(()=>parseScoreEvents('1-0 Not in roster',s.catalog),/onbekend/);
 });
 test('adding a result retains known season figures and never adds inferred appearances or duration',()=>{
  const s=fixture(),oldId=s.catalog.matches[2].id;s.stats=s.catalog.players.map(p=>({matchId:oldId,playerId:p.id,present:true,minutes:25,keeperMinutes:p.id==='p01'?25:0,goals:p.id==='p02'?1:0}));
- const next=coachReducer(s,action(s));assert.deepEqual(next.stats,s.stats);assert.equal(totalGoals(next),5);assert.equal(processedMatchIds(next).size,2);assert.equal(teamMatchMinutes(next),50);assert.equal(unknownMatchDurationCount(next),1);assert.deepEqual(individualStatsRows(next),s.stats);assert.equal(seasonGoalRows(next).filter(r=>r.playerId==='p02').reduce((n,r)=>n+r.goals,0),3);
+ const next=coachReducer(s,action(s));assert.deepEqual(next.stats,s.stats);assert.equal(totalGoals(next),5);assert.equal(processedMatchIds(next).size,2);assert.equal(teamMatchMinutes(next),100);assert.equal(standardMatchDurationCount(next),1);assert.deepEqual(individualStatsRows(next),s.stats);assert.equal(seasonGoalRows(next).filter(r=>r.playerId==='p02').reduce((n,r)=>n+r.goals,0),3);
 });
 test('away input and display put the home team first while stored scores remain team relative',()=>{
  const s=fixture(),text='3-0\n3-1 Mats\n3-2 Mats\n3-3 Siem\n4-3\n4-4 Jayden';const r={goalsFor:4,goalsAgainst:4,events:parseScoreEvents(text,s.catalog,'Uit')};assert.ok(validateResultOnly(r,s.catalog));assert.equal(r.events[0].scoreAgainst,3);assert.equal(r.events[1].scoreFor,1);assert.equal(scoreEventsText(r,s.catalog,'Uit'),text);

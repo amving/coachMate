@@ -13,7 +13,7 @@ test('save/reload result and exact score snapshots without introducing attendanc
  await expect(page.getByRole('button',{name:'Daan aanwezig',exact:true})).toHaveCount(0);
  await page.getByLabel('Eindstand eigen team',{exact:true}).fill('2');await page.getByLabel('Eindstand tegenstander',{exact:true}).fill('3');await page.getByLabel('Chronologisch scoreverloop').fill('0-3\n1-3 Mats\n2-3 Siem');await page.getByRole('button',{name:'Opslaan',exact:true}).click();
  const stored=await readState(page);expect(stored.stats).toEqual(s.stats);expect(stored.availability).toEqual(s.availability);expect(stored.live).toEqual(s.live);expect(stored.resultOnly![id].events).toHaveLength(3);expect(stored.resultOnly![id].events.every(e=>e.minute===null)).toBe(true);
- await nav(page,'Statistieken').click();await expect(page.getByLabel('Cumulatieve statistieken')).toContainText('1 wedstrijden');await expect(page.getByTestId('season-match-minutes')).toHaveText('?');await expect(page.getByRole('button',{name:'Statistieken Mats',exact:true})).toContainText('1goals');
+ await nav(page,'Statistieken').click();await expect(page.getByLabel('Cumulatieve statistieken')).toContainText('1 wedstrijden');await expect(page.getByTestId('season-match-minutes')).toHaveText('50');await expect(page.getByRole('button',{name:'Statistieken Mats',exact:true})).toContainText('1goals');
  await page.getByLabel('Rangschik op',{exact:true}).selectOption('attendance');await expect(page.locator('.rank-number').first()).toHaveText('–');await expect(page.locator('.rank-value').first()).toHaveText('—wedstrijden');
  await page.reload();await nav(page,'Statistieken').click();await page.getByRole('button',{name:'Bekijk en corrigeer historische wedstrijdgegevens',exact:true}).click();await page.locator('.history-row').filter({hasText:s.catalog!.matches[0].opponent}).click();await expect(page.getByLabel('Chronologisch scoreverloop')).toHaveValue('0-3\n1-3 Mats\n2-3 Siem');
  await page.screenshot({path:'outputs/result-only-entry.png',fullPage:true});
@@ -44,4 +44,58 @@ test('a lost save response retries the same durable batch without registering th
  await page.getByLabel('Eindstand eigen team',{exact:true}).fill('1');await page.getByLabel('Eindstand tegenstander',{exact:true}).fill('0');await page.getByLabel('Chronologisch scoreverloop').fill('1-0 Mats');await page.getByRole('button',{name:'Opslaan',exact:true}).click();
  await expect(page.locator('.result-only-entry').getByRole('alert')).toContainText('concept blijft bewaard');await expect(page.getByLabel('Chronologisch scoreverloop')).toHaveValue('1-0 Mats');
  await page.getByRole('button',{name:'Melding sluiten',exact:true}).click();await page.getByRole('button',{name:'Opslaan',exact:true}).click();await expect(page.locator('.history-screen')).toBeVisible();expect(requests).toHaveLength(2);expect(requests[0].batchId).toBe(requests[1].batchId);expect(requests[0].actions).toEqual(requests[1].actions);expect(Object.keys(saved.resultOnly!)).toHaveLength(1);expect(saved.stats).toEqual([]);expect(saved.availability).toEqual(initial.availability);expect(revision).toBe(2);
+});
+
+
+test('reopening and refreshing hides a shared completed match while retaining a stale local draft',async({page})=>{
+ const initial=fixture();
+ const oldMatch=initial.catalog!.matches.find(m=>m.id===initial.catalog!.liveMatchId)!;
+ oldMatch.date='2030-11-14';
+ const nextMatch=initial.catalog!.matches.find(m=>m.id!==oldMatch.id)!;
+ nextMatch.date='2030-11-21';
+ const published=structuredClone(initial);
+ published.catalog!.liveMatchId=nextMatch.id;
+ const scorer=initial.catalog!.players[0].shortName;
+ const scoreText=oldMatch.venue==='Thuis'?`0-9\n1-9 ${scorer}\n2-9 ${scorer}\n3-9 ${scorer}`:`9-0\n9-1 ${scorer}\n9-2 ${scorer}\n9-3 ${scorer}`;
+ published.resultOnly={[oldMatch.id]:{goalsFor:3,goalsAgainst:9,events:parseScoreEvents(scoreText,initial.catalog!,oldMatch.venue)}};
+ const email='status@example.test';
+ const key=`coachmate:local-journal:${email}:${initial.catalog!.teamSeasonId}`;
+ const action={type:'goal' as const,playerId:initial.live.field[0],ownGoal:false,minute:0,now:1};
+ const draft={version:1,id:'status-draft',account:email,teamSeasonId:initial.catalog!.teamSeasonId,revision:1,sourceToken:'source-1',actions:[action],state:applyActionBatch(initial,[action])};
+ const raw=JSON.stringify(draft);
+ await page.addInitScript(({key,raw})=>localStorage.setItem(key,raw),{key,raw});
+ await page.clock.setFixedTime(new Date('2030-11-13T12:00:00Z'));
+ let current=initial, revision=1, writes=0;
+ const distribution={forms:[],invites:[],jobs:[],deliveries:[],mailReady:false};
+ await page.route('http://127.0.0.1:4175/**',async route=>{
+  if(route.request().method()!=='GET')writes++;
+  const path=new URL(route.request().url()).pathname;
+  const state={state:current,revision,sourceToken:`source-${revision}`,distribution};
+  await route.fulfill({json:path==='/api/session'?{configured:true,authenticated:true,email,csrf:'test'}:path==='/api/teams'?{...state,teams:[initial.catalog],seasons:[]}:path==='/api/state'?state:distribution});
+ });
+ await page.goto('/?device=real');
+ await expect(page.locator('.next-game-overview')).toContainText(oldMatch.opponent);
+ current=published;revision=2;
+ await page.getByRole('button',{name:'Vernieuwen',exact:true}).click();
+ await expect(page.locator('.next-game-overview')).toContainText(nextMatch.opponent);
+ await expect(page.getByTestId('total-minutes')).toHaveText('50');
+ await nav(page,'Live').click();
+ await expect(page.getByRole('heading',{name:'Geen actieve wedstrijd',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:/^Goal voor/})).toHaveCount(0);
+ await expect(page.getByLabel('Live wedstrijd kiezen').getByRole('option',{name:new RegExp(oldMatch.opponent)})).toHaveCount(0);
+ await expect(page.getByLabel('Lokaal wedstrijdconcept')).toBeVisible();
+ await nav(page,'Statistieken').click();
+ await expect(page.getByTestId('season-match-minutes')).toHaveText('50');
+ await expect(page.getByRole('button',{name:`Statistieken ${scorer}`,exact:true})).toContainText('3goals');
+ await page.getByRole('button',{name:'Melding sluiten',exact:true}).click();
+ await page.getByRole('button',{name:'Bekijk en corrigeer historische wedstrijdgegevens',exact:true}).click();
+ const history=page.locator('.history-grouped-list .history-row').filter({hasText:oldMatch.opponent});
+ await expect(history).toHaveCount(1);
+ await history.click();
+ await expect(page.getByLabel('Chronologisch scoreverloop')).toHaveValue(scoreText);
+ expect(await page.evaluate(key=>localStorage.getItem(key),key)).toBe(raw);
+ await page.reload();
+ await expect(page.locator('.next-game-overview')).toContainText(nextMatch.opponent);
+ expect(await page.evaluate(key=>localStorage.getItem(key),key)).toBe(raw);
+ expect(writes).toBe(0);
 });

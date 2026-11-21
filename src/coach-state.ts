@@ -1,5 +1,5 @@
 import {validateFormationCatalog,validateFormations,validatePreparedFormation,type Formation} from './formations.ts';
-import { isProcessed, validateResultOnly, type ResultOnlyMatch } from './result-only.ts';
+import { isProcessed, processedMatchIds, validateResultOnly, type ResultOnlyMatch } from './result-only.ts';
 import { normalizePolicy, revisePolicy, type SubstitutionPolicy } from './substitution/policy.ts';
 import type { Occupancy } from './substitution/types.ts';
 import type { PlayerProfile } from './substitution/types.ts';
@@ -179,13 +179,14 @@ export function individualStatsRows(state: CoachState): MatchStat[] {
 // from the keeper. Historical entries use 50; tracked matches retain actual time.
 export function teamMatchMinutes(state: CoachState): number {
   const liveId = (state.catalog ?? demoCatalog()).liveMatchId;
-  return [...new Set(state.stats.map(row => row.matchId))].reduce((sum, id) => {
+  return [...processedMatchIds(state)].reduce((sum, id) => {
+    if (state.resultOnly?.[id]) return sum + MATCH_DURATION_MINUTES;
     const tracked = state.liveArchive?.[id] ?? (id === liveId && state.live.phase === 'Einde' ? state.live : undefined);
     return sum + (goalsOnlyMatch(state, id) ? MATCH_DURATION_MINUTES : tracked ? tracked.elapsedMs / 60000 : state.matchResults?.[id]?.duration ?? MATCH_DURATION_MINUTES);
   }, 0);
 }
 
-export function unknownMatchDurationCount(state:CoachState):number {return Object.keys(state.resultOnly??{}).length;}
+export function standardMatchDurationCount(state:CoachState):number {return Object.keys(state.resultOnly??{}).length;}
 
 // Account for wall-clock time, including background tabs and page reloads.
 export function settleLive(live: LiveMatch, now: number): LiveMatch {
