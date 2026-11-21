@@ -5,6 +5,13 @@ import {recommendCadence,type Cadence,type SquadSelection} from './substitution/
 import type {FieldPosition,Scenario} from './substitution/types.ts';
 
 export type PreparationDraft={version:3;teamSeasonId:string;matchId:string;planId:string;slots:string[];cadence:Cadence;field:string[];positions:Record<string,FieldPosition>;statuses:Record<string,Availability>;formation?:number[];manualLineup:boolean;dirty:boolean;keepersConfirmed:boolean;plan?:Scenario;sourceContext?:string;calculatedKey?:string;legacy?:unknown};
+export function preparationProblem(error:unknown,state:CoachState):string {
+ const message=error instanceof Error?error.message:'Geen geldig wisselplan. Je keuzes blijven bewaard.';
+ if(!message.includes('PLAYER_DATA:'))return message;
+ const playerIds=new Set(message.split('; ').filter(issue=>issue.startsWith('PLAYER_DATA: ')).map(issue=>issue.slice('PLAYER_DATA: '.length)));
+ const names=(state.catalog??demoCatalog()).players.filter(p=>playerIds.has(p.id)).map(p=>p.shortName);
+ return `Controleer de eerdere wedstrijdcijfers en persoonlijke minutenlimieten${names.length?' van '+names.join(', '):''}. Je huidige keuzes blijven bewaard.`;
+}
 function storedPlanValid(plan:Scenario|undefined,state:CoachState,matchId:string):boolean {
  const c=state.catalog??demoCatalog();
  return Boolean(plan&&plan.matchId===matchId&&plan.teamSeasonId===c.teamSeasonId&&typeof plan.id==='string'&&Number.isFinite(plan.fairnessErrorMs)&&plan.fairnessErrorMs>=0&&Array.isArray(plan.reasonCodes)&&plan.reasonCodes.every(code=>typeof code==='string')&&plan.expectedEndMs&&Array.isArray(plan.intervals)&&plan.intervals.length>0&&plan.intervals.every((s,i,a)=>Number.isSafeInteger(s.startMs)&&Number.isSafeInteger(s.endMs)&&s.endMs>s.startMs&&s.startMs===(i?a[i-1].endMs:0)&&Array.isArray(s.field)&&s.field.length===(state.team.fieldSize??6)&&new Set(s.field).size===s.field.length&&s.field.every(id=>c.players.some(p=>p.id===id))&&s.field.includes(s.keeperId))&&plan.intervals.at(-1)!.endMs===50*60000);

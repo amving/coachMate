@@ -3,6 +3,14 @@ import { validateMatchState } from './rules.ts';
 import { validateProfile } from './profile.ts';
 import type { MatchState, PlayerProfile } from './types.ts';
 
+// Saved integer milliseconds pass through a minute value in MatchStats. Undo
+// only the representation noise of that round trip; real sub-ms data must
+// still fail validation. Never alter the stored figures or unknown markers.
+function historyMilliseconds(minutes:number):number {
+  const ms=minutes*60000,nearest=Math.round(ms);
+  return Math.abs(ms-nearest)<=Number.EPSILON*Math.max(1,Math.abs(ms))*2?nearest:ms;
+}
+
 export function dateKey(match: Match): string | null {
   const months = ['januari','februari','maart','april','mei','juni','juli','augustus','september','oktober','november','december'];
   const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(match.date);
@@ -70,7 +78,7 @@ export function adaptMatchState(source: CoachState, options: {now:number; revisi
       substitutionCount:entries.length+exits.length,lastEntryMs,lastExitMs,
       history:history.flatMap(m=>{
         const row=source.stats.find(r=>r.matchId===m.id&&r.playerId===p.id);
-        return row?.present?[{matchId:m.id,playedMs:row.minutesKnown===false?null:row.minutes*60000,targetMs:row.targetMinutes===undefined?null:row.targetMinutes*60000,keeperMs:row.keeperMinutesKnown===false?null:row.keeperMinutes*60000}]:[];
+        return row?.present?[{matchId:m.id,playedMs:row.minutesKnown===false?null:historyMilliseconds(row.minutes),targetMs:row.targetMinutes===undefined?null:historyMilliseconds(row.targetMinutes),keeperMs:row.keeperMinutesKnown===false?null:historyMilliseconds(row.keeperMinutes)}]:[];
       }),
     };
   }).sort((a,b)=>a.id.localeCompare(b.id));
