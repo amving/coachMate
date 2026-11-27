@@ -149,6 +149,7 @@ test('parent login asks only for identity and the parent session is barred from 
     env:{...process.env,NODE_ENV:'test',PORT:String(port),APP_ORIGIN:base,API_ORIGIN:base,
       GOOGLE_CLIENT_ID:'fake-client.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'fake-client-secret',
       GOOGLE_SESSION_SECRET:secret,GOOGLE_SPREADSHEET_ID:'fixture-sheet',COACH_EMAILS:'coach@example.test',
+      COACHMATE_APP_STORE:'sheets',COACHMATE_PARENT_ENABLED:'true',
       COACHMATE_PARENT_PROJECT:'fixture-project',COACHMATE_PARENT_TEAMS:'test-parent-team'},
     stdio:['ignore','pipe','pipe'],
   });
