@@ -1,4 +1,5 @@
 import {isProcessed,processedMatchIds,seasonGoalRows,resultPlayerGoals,parseScoreEvents,scoreEventsText,validateResultOnly,type ResultOnlyMatch} from './result-only';
+import {matchStanding,outcomeLabels,registeredMatchResults} from './history-standings';
 import {invitationProgress,invitationMatches,type InvitationFilter} from './invitation-progress';
 import {newPreparationDraft,readPreparationDraft,keeperScheduleValid,startingLineupValid,startingLineupIssue,preparationPlanCurrent,calculatePreparation,preparationProblem,type PreparationDraft} from './preparation-flow';
 import {mergeRoundRows,sameRoundRows,roundDateValue,preparationComplete} from './availability-workflow';
@@ -996,6 +997,7 @@ function StatsScreen({homeRequest}:{homeRequest:number}) {
   const draftIds = Array.from(new Set([...Object.keys(drafts), ...Object.keys(ownGoalDrafts),...resultDraftIds]));
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
+  const [historyRound, setHistoryRound] = useState('');
   const [ranking, setRanking] = useState<StatsRanking>("goals");
   const [statsView,setStatsView]=useState<"ranking"|"players">("ranking");
   const [playerDetailId,setPlayerDetailId]=useState<string|null>(null),[notesOpen,setNotesOpen]=useState(false),[entryInfoOpen,setEntryInfoOpen]=useState(false);
@@ -1080,7 +1082,81 @@ function StatsScreen({homeRequest}:{homeRequest:number}) {
   const standings=rankings[ranking];
   const knownKeeper = fullRows.reduce((sum,r)=>sum+(r.keeperMinutesKnown===false?0:r.keeperMinutes),0);
   const newMatch = editable.find(m => !completed.has(m.id));
-  if (historyOpen) return <main className="screen-content stats-screen history-screen"><section className="entry-header"><div><h1>Wedstrijdhistorie</h1><p className="muted">Bekijk, voer in en corrigeer wedstrijdcijfers.</p></div></section>{draftIds.length>0&&<section className="draft-list"><h2>Bewaarde concepten</h2>{draftIds.map(id=><button type="button" className="history-row" key={id} onClick={()=>{keyboard.hide();setSelectedMatchId(id);setResultEntry(resultDraftIds.includes(id));setEditing(true);}}><span><strong>{matches.find(m=>m.id===id)?.opponent}</strong><small>Concept hervatten</small></span><ChevronRightIcon/></button>)}</section>}<section className="history-entry-action"><button type="button" className="primary-button" disabled={archived||!newMatch} onClick={()=>{keyboard.hide();if(newMatch){setSelectedMatchId(newMatch.id);setEditing(true);}}}><PlusIcon/>Wedstrijd invoeren</button><p className="summary-note">{archived?"Dit seizoen is alleen-lezen.":newMatch?"Voer cijfers in voor een wedstrijd die nog niet is verwerkt.":"Alle wedstrijden zijn verwerkt. Een actieve wedstrijd verwerk je via Live."}</p></section><section className="history-match-list"><h2>Geregistreerde wedstrijden</h2><label className="history-search-field"><MagnifyingGlassIcon/><KeyboardInput className="history-search" aria-label="Wedstrijdhistorie zoeken" placeholder="Tegenstander of datum" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>{historyQuery&&<button type="button" aria-label="Zoekopdracht wissen" onClick={()=>setHistoryQuery("")}><Cross1Icon/></button>}</label><div className="history-grouped-list">{!matches.some(m=>completed.has(m.id)&&`${m.opponent} ${m.date} ${m.shortDate}`.toLowerCase().includes(historyQuery.toLowerCase()))&&<div className="empty-state compact"><MagnifyingGlassIcon/><strong>Geen wedstrijden gevonden</strong><p>Probeer een andere tegenstander of datum.</p></div>}{orderedMatches(matches.filter(m=>completed.has(m.id)&&`${m.opponent} ${m.date} ${m.shortDate}`.toLowerCase().includes(historyQuery.toLowerCase()))).reverse().map(m=><button type="button" className="history-row" key={m.id} onClick={()=>{keyboard.hide();setSelectedMatchId(m.id);setEditing(true);}}><DateTile match={m}/><span className="history-match-copy"><strong>{m.opponent}</strong><small>{m.time} · {m.venue}</small></span>{(()=>{const result=recordedMatchResult(state,m.id);return result&&<b>{scoreInVenueOrder(m,result.goalsFor,result.goalsAgainst).join("–")}</b>;})()}<ChevronRightIcon/></button>)}</div></section></main>;
+  if(historyOpen){
+    const rounds=[...new Set(matches.map(match=>match.availabilityRound))].sort((a,b)=>b-a);
+    const round=rounds.find(value=>String(value)===historyRound);
+    const registered=registeredMatchResults(state,matches).filter(row=>round===undefined||row.match.availabilityRound===round);
+    const standing=matchStanding(registered);
+    const known=standing.played-standing.unknown;
+    const showTotals=known>0||standing.played===0;
+    const difference=standing.goalDifference>0?`+${standing.goalDifference}`:standing.goalDifference<0?`−${Math.abs(standing.goalDifference)}`:'0';
+    const outcomeKeys=['win','draw','loss'] as const;
+    const byId=new Map(registered.map(row=>[row.match.id,row.result]));
+    const query=historyQuery.trim().toLocaleLowerCase('nl-NL');
+    const visible=orderedMatches(registered.map(row=>row.match).filter(m=>
+      `${m.opponent} ${m.date} ${m.shortDate}`.toLocaleLowerCase('nl-NL').includes(query)
+    )).reverse();
+
+    return <main className="screen-content stats-screen history-screen">
+      <section className="entry-header history-heading">
+        <h1>Wedstrijdhistorie</h1>
+        {!archived&&newMatch&&<button type="button" className="text-button" onClick={()=>{
+          keyboard.hide();setSelectedMatchId(newMatch.id);setEditing(true);
+        }}><PlusIcon/>Wedstrijd invoeren</button>}
+      </section>
+      <section className="history-standing" aria-labelledby="history-standing-title">
+        <div className="history-standing-header">
+          <h2 id="history-standing-title">Stand</h2>
+          <select aria-label="Stand bekijken" value={round===undefined?'':String(round)} onChange={event=>setHistoryRound(event.target.value)}>
+            <option value="">Hele seizoen</option>
+            {rounds.map(value=><option key={value} value={value}>Speelronde {value}</option>)}
+          </select>
+        </div>
+        <dl className="history-standing-metrics" aria-live="polite">
+          <div className="history-standing-points"><dt>Punten</dt><dd>{showTotals?standing.points:'—'}</dd></div>
+          <div><dt>Wedstrijden</dt><dd>{standing.played}</dd></div>
+          <div><dt>Doelsaldo</dt><dd>{showTotals?difference:'—'}</dd></div>
+          {outcomeKeys.map(key=><div key={key} data-outcome={key}><dt>{outcomeLabels[key]}</dt><dd>{showTotals?standing[key]:'—'}</dd></div>)}
+        </dl>
+        {known>0&&<div className="history-outcome-bar" aria-hidden="true">
+          {outcomeKeys.filter(key=>standing[key]>0).map(key=><span key={key} data-outcome={key} style={{flexGrow:standing[key]}}/>)}
+        </div>}
+        {standing.unknown>0&&<p className="history-standing-note">{standing.unknown===1?'1 wedstrijd zonder bekende eindstand':`${standing.unknown} wedstrijden zonder bekende eindstand`}</p>}
+      </section>
+      {draftIds.length>0&&<section className="draft-list"><h2>Bewaarde concepten</h2>{draftIds.map(id=>
+        <button type="button" className="history-row" key={id} onClick={()=>{
+          keyboard.hide();setSelectedMatchId(id);setResultEntry(resultDraftIds.includes(id));setEditing(true);
+        }}><span><strong>{matches.find(m=>m.id===id)?.opponent}</strong><small>Concept hervatten</small></span><ChevronRightIcon/></button>
+      )}</section>}
+      <section className="history-match-list">
+        <h2>Geregistreerde wedstrijden</h2>
+        <label className="history-search-field">
+          <MagnifyingGlassIcon/>
+          <KeyboardInput className="history-search" aria-label="Wedstrijdhistorie zoeken" placeholder="Tegenstander of datum" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>
+          {historyQuery&&<button type="button" aria-label="Zoekopdracht wissen" onClick={()=>setHistoryQuery('')}><Cross1Icon/></button>}
+        </label>
+        <div className="history-grouped-list">
+          {!visible.length&&<div className="empty-state compact">
+            <MagnifyingGlassIcon/><strong>{registered.length?'Geen wedstrijden gevonden':'Nog geen geregistreerde wedstrijden'}</strong>
+            {registered.length>0&&<p>Probeer een andere tegenstander of datum.</p>}
+          </div>}
+          {visible.map(m=>{
+            const result=byId.get(m.id);
+            return <button type="button" className="history-row" key={m.id} onClick={()=>{keyboard.hide();setSelectedMatchId(m.id);setEditing(true);}}>
+              <DateTile match={m}/>
+              <span className="history-match-copy"><strong>{m.opponent}</strong><small>{m.time} · {m.venue}</small></span>
+              <span className="history-result">
+                {result?<><b>{scoreInVenueOrder(m,result.goalsFor,result.goalsAgainst).join('–')}</b>
+                  <span className="history-result-badge" data-outcome={result.outcome}>{outcomeLabels[result.outcome]} · {result.points} pnt</span>
+                </>:<span className="history-result-missing">Eindstand onbekend</span>}
+              </span>
+              <ChevronRightIcon/>
+            </button>;
+          })}
+        </div>
+      </section>
+    </main>;
+  }
   const profile=totals.find(row=>row.player.id===playerDetailId);
   const profileOrder=statsView==="ranking"?standings.map(row=>row.player):players;
   const profileIndex=profileOrder.findIndex(player=>player.id===playerDetailId);
