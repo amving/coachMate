@@ -47,7 +47,7 @@ test('a lost save response retries the same durable batch without registering th
 });
 
 
-test('reopening and refreshing hides a shared completed match while retaining a stale local draft',async({page})=>{
+test('refreshing shows the next shared live match and backs up a stale draft of the processed match',async({page})=>{
  const initial=fixture();
  const oldMatch=initial.catalog!.matches.find(m=>m.id===initial.catalog!.liveMatchId)!;
  oldMatch.date='2030-11-14';
@@ -63,7 +63,10 @@ test('reopening and refreshing hides a shared completed match while retaining a 
  const action={type:'goal' as const,playerId:initial.live.field[0],ownGoal:false,minute:0,now:1};
  const draft={version:1,id:'status-draft',account:email,teamSeasonId:initial.catalog!.teamSeasonId,revision:1,sourceToken:'source-1',actions:[action],state:applyActionBatch(initial,[action])};
  const raw=JSON.stringify(draft);
- await page.addInitScript(({key,raw})=>localStorage.setItem(key,raw),{key,raw});
+ const backup=key+':backup:'+draft.id+':processed-match';
+ await page.addInitScript(({key,backup,raw})=>{
+  if(!localStorage.getItem(backup))localStorage.setItem(key,raw);
+ },{key,backup,raw});
  await page.clock.setFixedTime(new Date('2030-11-13T12:00:00Z'));
  let current=initial, revision=1, writes=0;
  const distribution={forms:[],invites:[],jobs:[],deliveries:[],mailReady:false};
@@ -80,22 +83,23 @@ test('reopening and refreshing hides a shared completed match while retaining a 
  await expect(page.locator('.next-game-overview')).toContainText(nextMatch.opponent);
  await expect(page.getByTestId('total-minutes')).toHaveText('50');
  await nav(page,'Live').click();
- await expect(page.getByRole('heading',{name:'Geen actieve wedstrijd',exact:true})).toBeVisible();
- await expect(page.getByRole('button',{name:/^Goal voor/})).toHaveCount(0);
- await expect(page.getByLabel('Live wedstrijd kiezen').getByRole('option',{name:new RegExp(oldMatch.opponent)})).toHaveCount(0);
- await expect(page.getByLabel('Lokaal wedstrijdconcept')).toBeVisible();
+ await expect(page.getByRole('button',{name:/^Goal voor/})).toBeEnabled();
+ const scoreCard=page.locator('.live-score-card');
+ await expect(scoreCard).toContainText(nextMatch.opponent);
+ await expect(scoreCard).not.toContainText(oldMatch.opponent);
+ await expect(page.getByRole('region',{name:'Lokaal wedstrijdconcept'})).toHaveCount(0);
  await nav(page,'Statistieken').click();
  await expect(page.getByTestId('season-match-minutes')).toHaveText('50');
  await expect(page.getByRole('button',{name:`Statistieken ${scorer}`,exact:true})).toContainText('3goals');
- await page.getByRole('button',{name:'Melding sluiten',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Melding sluiten',exact:true})).toHaveCount(0);
  await page.getByRole('button',{name:'Bekijk en corrigeer historische wedstrijdgegevens',exact:true}).click();
  const history=page.locator('.history-grouped-list .history-row').filter({hasText:oldMatch.opponent});
  await expect(history).toHaveCount(1);
  await history.click();
  await expect(page.getByLabel('Chronologisch scoreverloop')).toHaveValue(scoreText);
- expect(await page.evaluate(key=>localStorage.getItem(key),key)).toBe(raw);
+ expect(await page.evaluate(([key,backup])=>[localStorage.getItem(key),localStorage.getItem(backup)],[key,backup])).toEqual([null,raw]);
  await page.reload();
  await expect(page.locator('.next-game-overview')).toContainText(nextMatch.opponent);
- expect(await page.evaluate(key=>localStorage.getItem(key),key)).toBe(raw);
+ expect(await page.evaluate(([key,backup])=>[localStorage.getItem(key),localStorage.getItem(backup)],[key,backup])).toEqual([null,raw]);
  expect(writes).toBe(0);
 });

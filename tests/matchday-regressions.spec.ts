@@ -78,7 +78,7 @@ test('an externally saved score clears the old live concept notices and keeps th
   resultOnly:{next:{goalsFor:7,goalsAgainst:5,events:[]}}};
  await nav(page,'Overzicht').tap();
  await page.getByRole('button',{name:'Vernieuwen',exact:true}).tap();
- await expect(page.getByText('Volgende club',{exact:true})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'Volgende club',exact:true})).toBeVisible();
  await expect(notice).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Melding sluiten',exact:true})).toHaveCount(0);
  const backup=key+':backup:'+JSON.parse(raw).id+':processed-match';
