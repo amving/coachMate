@@ -43,7 +43,9 @@ test('parents accept their link and update upcoming matches without coach access
  await expect(page.getByText('Huidige antwoord: Afwezig',{exact:true})).toBeVisible();
 });
 test('coach creates a scoped parent link and can revoke the existing link',async({page})=>{
- const catalog=demoCatalog(),state=createTeamState(catalog,4,6);
+ const catalog=demoCatalog();
+ catalog.matches=catalog.matches.map((match,index)=>index===0?{...match,date:'2099-09-14'}:match);
+ const state=createTeamState(catalog,4,6);
  const parent='parent@example.test';
  const linkId='test-parent-link';
  let links=[{id:linkId,playerId:'p01',email:parent}];

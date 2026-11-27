@@ -43,7 +43,13 @@ test('archived match details stay viewable and show stored scores in home-away o
 
 test('long names, four rank badges and the player picker work on a narrow phone; an empty season stays unranked',async({page})=>{
  await page.setViewportSize({width:320,height:640});await open(page,state=>{state.stats=[];state.catalog!.players[0].name='Alexander van der Meer van Nieuwenhuizen';});await page.getByRole('tab',{name:'Spelers 10',exact:true}).click();await player(page,'Daan').click();const dialog=page.getByRole('dialog');await expect(dialog).toHaveAccessibleName('Alexander van der Meer van Nieuwenhuizen');await expect(dialog.locator('.metric-rank > strong')).toHaveText(['—','—','—','—']);await expect(dialog.getByRole('button',{name:'Speler kiezen',exact:true})).toBeInViewport();expect(await dialog.locator('.sheet-title').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
- for(const name of ['Vorige speler','Volgende speler']){const b=await dialog.getByRole('button',{name,exact:true}).boundingBox();expect(b!.width).toBeGreaterThanOrEqual(44);expect(b!.height).toBeGreaterThanOrEqual(44);}
+ // WebKit can report 43.99998 CSS pixels for an exact 44px target.
+ for(const name of ['Vorige speler','Volgende speler']){
+  const bounds=await dialog.getByRole('button',{name,exact:true}).boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.width).toBeGreaterThanOrEqual(44-0.001);
+  expect(bounds!.height).toBeGreaterThanOrEqual(44-0.001);
+ }
  await dialog.getByRole('button',{name:'Speler kiezen',exact:true}).click();await page.getByLabel('Speler zoeken',{exact:true}).fill('Mats');await page.getByRole('button',{name:'Bekijk Mats Bakker',exact:true}).click();await expect(dialog).toHaveAccessibleName('Mats Bakker');await expect(dialog.getByRole('button',{name:'Sluiten',exact:true})).toBeInViewport();
 });
 

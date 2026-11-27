@@ -65,10 +65,14 @@ export function replaySharedLive(base, events) {
 export class SharedLive {
   constructor(portal, clock=Date.now) {this.portal=portal;this.store=portal.store;this.clock=clock;}
   async row(team, match) {return this.store.get('Live',key(team,match));}
-  async save(row, data) {
-    await this.store.commit([{collection:'Live',id:row.id,version:row.version,data:{
+  change(row, data) {
+    return {collection:'Live',id:row.id,version:row.version,data:{
       teamSeasonId:data.team,matchId:data.match,status:data.status,json:JSON.stringify(data),
-    }},...(row.link?[{collection:'Links',id:row.link.id,version:row.link.version,data:row.link.data}]:[])]);
+    }};
+  }
+  async save(row, data) {
+    await this.store.commit([this.change(row,data),
+      ...(row.link?[{collection:'Links',id:row.link.id,version:row.link.version,data:row.link.data}]:[])]);
   }
   async open(state, input, coach) {
     const team=state.catalog.teamSeasonId, match=input.matchId;
@@ -114,7 +118,7 @@ export class SharedLive {
   view(row, actor, coach) {
     const data=content(row);
     const {state,errors}=replaySharedLive(data.base,data.excluded?data.events.filter(event=>!data.excluded.includes(event.id)):data.events);
-    return {teamSeasonId:data.team,matchId:data.match,status:data.status,version:data.reviewVersion??row.version,opponent:data.opponent,
+    return {teamSeasonId:data.team,matchId:data.match,status:data.status,version:row.version,opponent:data.opponent,
       players:data.base.catalog.players,live:state.live,errors,duplicates:duplicates(data.events),submitted:data.submitted??[],actor,
       ...(data.excluded?{excluded:data.excluded}:{}),
       clock:actor===data.clock&&coach,
@@ -160,15 +164,13 @@ export class SharedLive {
     if (isProcessed(current,data.match)||current.catalog.archived||current.catalog.liveMatchId!==data.match||source(current)!==data.baseline) {
       throw conflict('De officiële wedstrijdgegevens zijn gewijzigd. De gedeelde registratie is bewaard.');
     }
-    const version=data.status==='processing'?data.reviewVersion:row.version;
-    if (input.version!==version || !Array.isArray(input.excluded) || new Set(input.excluded).size!==input.excluded.length ||
-      input.excluded.some(id=>!data.events.some(e=>e.id===id)) ||
-      (data.status==='processing'&&fingerprint(data.excluded)!==fingerprint(input.excluded))) {
+    if (input.version!==row.version || !Array.isArray(input.excluded) || new Set(input.excluded).size!==input.excluded.length ||
+      input.excluded.some(id=>!data.events.some(e=>e.id===id))) {
       throw conflict('Het concept of de selectie is gewijzigd. Controleer opnieuw.');
     }
     const selected=data.events.filter(event=>!input.excluded.includes(event.id));
     if (!selected.length) throw new HttpError(422,'Kies minimaal één geldige wedstrijdactie.');
-    if (duplicates(selected).length&&(data.status==='processing'?data.checkedDuplicates:input.checkedDuplicates)!==true) throw new HttpError(422,'Controleer eerst de mogelijke dubbele acties.');
+    if (duplicates(selected).length&&input.checkedDuplicates!==true) throw new HttpError(422,'Controleer eerst de mogelijke dubbele acties.');
     const result=replaySharedLive(current,selected);
     if (result.errors.length) throw new HttpError(422,'Verwijder acties die niet bij de opstelling of klok passen.');
     if (result.state.live.runningSince!==null || result.state.live.elapsedMs<=0) {
@@ -185,30 +187,11 @@ export class SharedLive {
     return {score:scoreInVenueOrder(state.catalog.matches.find(m=>m.id===row.data.matchId),state.live.goals.length,state.live.awayGoals.length),
       milliseconds:state.live.elapsedMs,rows:liveMatchRows(state).filter(r=>r.present).map(({playerId,minutes,keeperMinutes,goals})=>({playerId,minutes,keeperMinutes,goals}))};
   }
-  async approval(row, input, current) {
-    const data=content(row);
-    if (data.status==='processed') return null;
-    if (data.status!=='review'&&data.status!=='processing') throw conflict('Bied het concept eerst ter controle aan.');
-    const batchId='shared-live-'+row.id;
-    if (current.committedBatches?.includes(batchId)) return {batchId,state:current};
+  approval(row, input, current) {
+    if (row.data.status!=='review') throw conflict('Bied het concept eerst ter controle aan.');
     const state=this.reviewSelection(row,input,current);
-    const version=data.status==='processing'?data.reviewVersion:row.version;
-    state.committedBatches=[...(state.committedBatches??[]),batchId].slice(-100);
-    if (data.status==='review'){
-      data.status='processing';data.reviewVersion=version;data.excluded=input.excluded;
-      data.checkedDuplicates=input.checkedDuplicates===true;data.processingSince=this.clock();
-      await this.save(row,data);
-    } else {
-      if(this.clock()-data.processingSince<60000)throw conflict('De vorige opslag kan nog lopen. Probeer over een minuut opnieuw.');
-      data.processingSince=this.clock();
-      await this.save(row,data);
-    }
-    return {batchId,state};
-  }
-  async processed(team, match) {
-    const row=await this.row(team,match), data=content(row);
-    if (data.status==='processed') return;
-    data.status='processed';data.processedAt=this.clock();
-    await this.save(row,data);
+    state.committedBatches=[...(state.committedBatches??[]),'shared-live-'+row.id].slice(-100);
+    const data={...content(row),status:'processed',processedAt:this.clock(),excluded:input.excluded};
+    return {state,change:this.change(row,data)};
   }
 }
