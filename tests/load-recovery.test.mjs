@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createTeamState,demoCatalog,coachReducer,parseState,validateRows,STORAGE_KEY} from '../src/coach-state.ts';
-import {journalKey,readJournal,archiveConfirmedJournal,rebuildJournal,storeRebuiltJournal,recoveryStorage} from '../src/local-cache.ts';
+import {journalKey,readJournal,archiveConfirmedJournal,archiveProcessedMatchJournal,rebuildJournal,storeRebuiltJournal,recoveryStorage} from '../src/local-cache.ts';
 
 function memory(entries=[]){const map=new Map(entries);return {map,getItem:k=>map.get(k)??null,setItem:(k,v)=>map.set(k,v),removeItem:k=>map.delete(k),key:i=>[...map.keys()][i]??null,get length(){return map.size;}};}
 function fixture(){
@@ -78,4 +78,41 @@ test('a confirmed batch is retained when its backup fails or its team does not m
  const other=structuredClone(latest);other.catalog.teamSeasonId='other';
  assert.throws(()=>archiveConfirmedJournal(f.storage,f.account,f.team,other),/ander team/);
  assert.equal(f.storage.getItem(journalKey(f.account,f.team)),f.raw);
+});
+
+test('an externally recorded result retires a live-only draft and preserves the exact local data',()=>{
+ const f=fixture(), key=journalKey(f.account,f.team), matchId=f.base.catalog.liveMatchId;
+ const draft={...f.draft,state:rebuildJournal(f.storage,f.account,f.team,f.base,7,'exact-original-source').state};
+ const raw=JSON.stringify(draft);
+ f.storage.setItem(key,raw);
+ const latest={...f.base,resultOnly:{[matchId]:{goalsFor:7,goalsAgainst:5,events:[]}}};
+ assert.equal(archiveProcessedMatchJournal(f.storage,f.account,f.team,f.base),false);
+ const locked={...f.storage,setItem:()=>{throw new Error('quota');}};
+ assert.throws(()=>archiveProcessedMatchJournal(locked,f.account,f.team,latest),/quota/);
+ assert.equal(f.storage.getItem(key),raw);
+ assert.equal(archiveProcessedMatchJournal(f.storage,f.account,f.team,latest),true);
+ assert.deepEqual(recoveryStorage(f.storage,f.account,f.team),{[key+':backup:original-batch:processed-match']:raw});
+ assert.equal(readJournal(f.storage,f.account,f.team),null);
+ assert.equal(latest.resultOnly[matchId].goalsFor,7);
+});
+
+test('preparation for a later match and unmatched score edits or team settings remain active',()=>{
+ const f=fixture(),key=journalKey(f.account,f.team),matchId=f.base.catalog.liveMatchId;
+ const nextMatch=f.base.catalog.matches.find(m=>m.id!==matchId);
+ const result={goalsFor:1,goalsAgainst:2,events:[]};
+ const latest={...f.base,resultOnly:{[matchId]:result}};
+ const preparation={type:'prepare-match',matchId:nextMatch.id};
+ for(const actions of [
+  [{type:'toggle-clock',now:1000},preparation],
+  [{type:'set-field-size',fieldSize:8,now:1000}],
+  [{type:'save-result',matchId,result:{...result,goalsFor:3}}],
+ ]){
+  const draft={...f.draft,baseMatchId:matchId,actions,state:f.base};
+  const raw=JSON.stringify(draft);
+  f.storage.setItem(key,raw);
+  assert.equal(archiveProcessedMatchJournal(f.storage,f.account,f.team,latest),false);
+  assert.equal(f.storage.getItem(key),raw);
+ }
+ f.storage.setItem(key,JSON.stringify({...f.draft,actions:[{type:'save-result',matchId,result}],state:f.base}));
+ assert.equal(archiveProcessedMatchJournal(f.storage,f.account,f.team,latest),true);
 });

@@ -1,5 +1,18 @@
 import { HttpError } from './sheets.mjs';
 
+export function parentAppTransport(connection) {
+  const root='/v1/'+connection.root;
+  return {
+    async request({url,data}){
+      const path=new URL(url).pathname;
+      if(!path.startsWith(root+'/')&&!path.startsWith(root+':'))throw new Error('Ongeldig pad voor de ouderopslag.');
+      const result=await connection.request(path.slice(root.length),data);
+      if(result===null)throw Object.assign(new Error('Ouderdocument ontbreekt.'),{response:{status:404}});
+      return {data:result};
+    },
+  };
+}
+
 const scalar = value => typeof value === 'number' ? { integerValue: String(value) } : { stringValue: value };
 const fields = data => Object.fromEntries(Object.entries(data).map(([key, value]) => [key, scalar(value)]));
 const unpack = doc => ({

@@ -7,8 +7,10 @@ import {openSession,sealSession} from './session.mjs';
 const random = () => randomBytes(32).toString('base64url');
 const ATTEMPT_AGE = 10 * 60;
 const SESSION_AGE = 8 * 60 * 60;
+export const authoritativeMailbox = (email,profile) =>
+  email.endsWith('@gmail.com')||(typeof profile.hd==='string'&&profile.hd.length>0);
 
-export function parentAuth({clientId,clientSecret,secret,origin,apiOrigin}) {
+export function parentAuth({clientId,clientSecret,secret,origin,apiOrigin,subjectToUid=subject=>subject}) {
   const secure = new URL(apiOrigin).protocol === 'https:';
   const sessionName = secure ? '__Host-coachmate_parent' : 'coachmate_parent';
   const attemptName = secure ? '__Host-coachmate_parent_oauth' : 'coachmate_parent_oauth';
@@ -17,9 +19,10 @@ export function parentAuth({clientId,clientSecret,secret,origin,apiOrigin}) {
     `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${secure?'; Secure':''}`;
   const redirect = (res,location) => res.writeHead(302,{Location:location}).end();
   const finish = (res,status) => redirect(res,origin+'/?parent=1&auth='+status);
-  const sessionCookie = ({uid,email,verifiedMailbox}) => {
-    const saved = {kind:'parent',uid,email,verifiedMailbox,csrf:random(),expires:Date.now()+SESSION_AGE*1000};
-    return cookie(sessionName,sealSession(saved,secret),SESSION_AGE);
+  const sessionCookie = ({uid,email,verifiedMailbox,expires}) => {
+    const now=Date.now(),age=Math.min(SESSION_AGE,Math.max(0,Math.floor(((expires??now+SESSION_AGE*1000)-now)/1000)));
+    const saved = {kind:'parent',uid,email,verifiedMailbox,csrf:random(),expires:now+age*1000};
+    return cookie(sessionName,sealSession(saved,secret),age);
   };
 
   return {
@@ -57,8 +60,8 @@ export function parentAuth({clientId,clientSecret,secret,origin,apiOrigin}) {
         const email = parentEmail(profile?.email);
         if(profile?.email_verified!==true||profile.nonce!==attempt.nonce||!email||typeof profile.sub!=='string'||!profile.sub)return finish(res,'failed');
         // Google can verify current mailbox ownership for Gmail and hosted Workspace accounts.
-        const verifiedMailbox = email.endsWith('@gmail.com')||(typeof profile.hd==='string'&&profile.hd.length>0);
-        res.setHeader('Set-Cookie',[sessionCookie({uid:profile.sub,email,verifiedMailbox}),clearAttempt]);
+        const verifiedMailbox = authoritativeMailbox(email,profile);
+        res.setHeader('Set-Cookie',[sessionCookie({uid:subjectToUid(profile.sub),email,verifiedMailbox}),clearAttempt]);
         return redirect(res,origin+'/?parent=1');
       } catch {
         return finish(res,'failed');

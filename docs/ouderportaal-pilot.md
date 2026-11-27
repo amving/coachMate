@@ -29,3 +29,9 @@ Gebruik voor ouders zonder Google-account Firebase Authentication in het aparte 
 Een ouder opent de persoonlijke uitnodiging en vraagt een link aan voor het daarop vermelde e-mailadres. CoachMate controleert de uitnodiging en aanvaardt de inloglink maximaal 15 minuten. Firebase verzilvert de link eenmalig. CoachMate koppelt het kind bij de eerste geslaagde aanmelding en gebruikt daarna dezelfde oudercookie en toegangscontroles als bij Google. Reeds via Google gekoppelde ouders hebben een nieuwe coachuitnodiging nodig als ze willen overstappen op e-mail. Voor een nieuwe aanmelding via e-mail volstaat een actieve bestaande e-mailkoppeling. Test echte aflevering en de actie-URL apart in de cloudpilot.
 
 Bij terugdraaien zet je `COACHMATE_PARENT_ENABLED=false` op de pilotservice. De Firestore-antwoorden blijven bewaard.
+
+### Coach én ouder in de Firestore-appdatabase
+
+Gebruik in de lokale [Firestore-appdatabasepilot](firestore-appdatabase.md) twee fictieve teams. Geef dezelfde Google-subject-ID coachrechten voor team A en laat een bevoegde coach een persoonlijke ouderuitnodiging maken voor een kind in team B. De ouderopslag en wedstrijdgegevens gebruiken hetzelfde demo-project. De coach kan via Instellingen naar het ouderportaal en vanuit het ouderportaal terug naar de eigen coachteams. De serversessies gebruiken dezelfde geverifieerde Google-identiteit en controleren afzonderlijk het teamrecht en de kindkoppeling.
+
+Behoud de e-maillink voor ouders zonder Google-account. Die identiteit blijft in deze proef zelfstandig. Coachrechten worden niet via een overeenkomstig e-mailadres overgenomen.

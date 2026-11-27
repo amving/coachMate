@@ -30,3 +30,45 @@ test('later round minutes can still be corrected individually without changing t
 test('processing a round-one live match previews only goals and fifty team minutes',async({page})=>{
  const s=fixture(false);s.catalog!.matches.find(m=>m.id==='m3')!.availabilityRound=1;s.live.elapsedMs=1800000;s.live.played=Object.fromEntries(s.catalog!.players.map(p=>[p.id,{milliseconds:s.live.field.includes(p.id)?1800000:0,keeperMilliseconds:p.id===s.live.keeperId?1800000:0}]));await open(page,s);await nav(page,'Live').click();await page.getByRole('button',{name:'Wedstrijddata verwerken',exact:true}).click();await expect(page.locator('.finish-table-head')).toHaveText('SpelerGoals');await expect(page.locator('.finish-score')).toContainText('50 wedstrijdminuten');await expect(page.getByRole('button',{name:'Afsluiten en verwerken',exact:true})).toBeEnabled();
 });
+
+test('history shows venue-ordered scores with team points and scopes the standings by round',async({page})=>{
+ await page.setViewportSize({width:320,height:680});
+ const catalog=demoCatalog();
+ catalog.matches=[
+  {...catalog.matches[0],id:'historical-win',opponent:'Uitploeg test',venue:'Uit',availabilityRound:2},
+  {...catalog.matches[1],id:'historical-draw',opponent:'Gelijkspel test',venue:'Thuis',availabilityRound:2},
+  {...catalog.matches[2],id:'historical-loss',opponent:'Verlies test',venue:'Thuis',availabilityRound:1},
+  {...catalog.matches[3],id:'historical-unknown',opponent:'Oude wedstrijd',availabilityRound:1},
+  {...catalog.matches[3],id:'future',opponent:'Volgende club',date:'2030-10-11',availabilityRound:3},
+ ];
+ catalog.liveMatchId='future';
+ const state=createTeamState(catalog);
+ state.resultOnly={
+  'historical-win':{goalsFor:7,goalsAgainst:5,events:[]},
+  'historical-draw':{goalsFor:0,goalsAgainst:0,events:[]},
+  'historical-loss':{goalsFor:1,goalsAgainst:4,events:[]},
+ };
+ state.stats=catalog.players.map(player=>({matchId:'historical-unknown',playerId:player.id,present:true,minutes:50,keeperMinutes:0,goals:0}));
+ await open(page,state);
+ await page.getByRole('button',{name:'Bekijk en corrigeer historische wedstrijdgegevens'}).click();
+ const standings=page.getByRole('region',{name:'Stand',exact:true});
+ const round=standings.getByRole('combobox',{name:'Stand bekijken'});
+ await expect(standings.locator('dd')).toHaveText(['4','4','−1','1','1','1']);
+ await expect(standings.getByText('1 wedstrijd zonder bekende eindstand')).toBeVisible();
+ const win=page.getByRole('button',{name:/Uitploeg test/});
+ await expect(win).toContainText('5–7');
+ await expect(win).toContainText('Winst · 3 pnt');
+ await expect(page.getByRole('button',{name:/Gelijkspel test/})).toContainText('Gelijk · 1 pnt');
+ await expect(page.getByRole('button',{name:/Verlies test/})).toContainText('Verlies · 0 pnt');
+ await expect(page.getByRole('button',{name:/Oude wedstrijd/})).toContainText('Eindstand onbekend');
+ await expect(page.getByRole('button',{name:/Volgende club/})).toHaveCount(0);
+ await round.selectOption('2');
+ await expect(standings.locator('dd')).toHaveText(['4','2','+2','1','1','0']);
+ await expect(page.getByRole('button',{name:/Verlies test/})).toHaveCount(0);
+ await page.getByRole('textbox',{name:'Wedstrijdhistorie zoeken'}).fill('gelijkspel');
+ await expect(win).toHaveCount(0);
+ await expect(standings.locator('dd')).toHaveText(['4','2','+2','1','1','0']);
+ await round.selectOption('3');
+ await expect(standings.locator('dd')).toHaveText(['0','0','0','0','0','0']);
+ await expect(page.getByText('Nog geen geregistreerde wedstrijden')).toBeVisible();
+});
