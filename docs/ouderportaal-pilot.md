@@ -29,3 +29,11 @@ Gebruik voor ouders zonder Google-account Firebase Authentication in het aparte 
 Een ouder opent de persoonlijke uitnodiging en vraagt een link aan voor het daarop vermelde e-mailadres. CoachMate controleert de uitnodiging en aanvaardt de inloglink maximaal 15 minuten. Firebase verzilvert de link eenmalig. CoachMate koppelt het kind bij de eerste geslaagde aanmelding en gebruikt daarna dezelfde oudercookie en toegangscontroles als bij Google. Reeds via Google gekoppelde ouders hebben een nieuwe coachuitnodiging nodig als ze willen overstappen op e-mail. Voor een nieuwe aanmelding via e-mail volstaat een actieve bestaande e-mailkoppeling. Test echte aflevering en de actie-URL apart in de cloudpilot.
 
 Bij terugdraaien zet je `COACHMATE_PARENT_ENABLED=false` op de pilotservice. De Firestore-antwoorden blijven bewaard.
+
+### Gedeelde Live-pilot
+
+Zet `COACHMATE_SHARED_LIVE_ENABLED=true` uitsluitend op de afgeschermde pilotservice met een testteam. Open en bewaar eerst een gewone wedstrijdvoorbereiding. Kies in Live **Ouders aanwijzen voor Live** en selecteer actieve ouderkoppelingen voor dit teamseizoen. De coach die de registratie opent bedient de klok. Open de wedstrijd op elk deelnemend toestel vóór het offline gaat.
+
+De app bewaart Live-acties per account, team, wedstrijd en toestel in de browser totdat Firestore de actie-ID bevestigt. Houd de wedstrijdtab geopend voor offline gebruik. In de controleweergave geeft het synchronisatietijdstip per toestel aan wanneer het contact had. Het geeft geen garantie over invoer die nog op dat toestel staat. De coach kan nagekomen invoer van vóór indiening meenemen of afwijzen. De oorspronkelijke aangeboden acties blijven herkenbaar.
+
+Voor definitieve verwerking stopt de coach de klok, kiest de acties en controleert de berekende uitslag en spelerscijfers. Alleen een goedgekeurde verwerking schrijft naar Sheets. Het opgeslagen wedstrijdarchief en de batch-ID worden teruggelezen voordat het concept als verwerkt wordt gemarkeerd. Bij een onzekere opslag probeert de coach dezelfde goedkeuring opnieuw. Verwerk één wedstrijd tegelijk via de pilotservice en behoud het geheel bij een gewijzigde bron voor vergelijking. Toegang van ouders tot Live vervalt bij intrekking van hun ouderkoppeling. Na verwerking is Live kort beschikbaar als leesbewijs, inclusief export van niet-opgestuurde lokale acties.
