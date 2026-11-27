@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {ParentPortal, projectParentAnswers, withoutParentProjection} from '../server/parents.mjs';
 import {ParentStore} from '../server/parent-store.mjs';
 import {parentAuth} from '../server/parent-auth.mjs';
+import {parentEmailLogin} from '../server/parent-email.mjs';
 import {OAuth2Client} from 'google-auth-library';
 import {createTeamState, demoCatalog} from '../src/coach-state.ts';
 
@@ -61,6 +62,73 @@ test('an invite can be used only by the verified intended account and grants one
   assert.equal(children[0].matches.find(m=>m.id==='scored').editable,false);
   assert.deepEqual(children[0].matches.filter(m=>m.editable).map(m=>m.id),['upcoming']);
   await assert.rejects(portal.answer(b,{linkId:children[0].linkId,matchId:'upcoming',status:'available',version:null}),{status:404});
+});
+
+test('one-time mail links verify the invited mailbox before giving access to one test child',async()=>{
+  const {a,b,invite,portal,catalog}=fixture();
+  let now=Date.now();
+  const issued=new Map();
+  const origin='https://coachmate.example.test';
+  const auth=parentEmailLogin({apiKey:'test-key',origin,apiOrigin:origin,secret:'parent-test-session-secret-32-bytes',portal,
+    identityBase:'https://identitytoolkit.googleapis.com',clock:()=>now,
+    request:async (url,options)=>{
+      const input=JSON.parse(options.body);
+      if(url.includes('accounts:sendOobCode')){
+        assert.equal(input.requestType,'EMAIL_SIGNIN');
+        assert.equal(input.canHandleCodeInApp,true);
+        const code='test-mail-code-'+issued.size+'-'+now;
+        issued.set(code,{email:input.email,continueUrl:input.continueUrl,used:false});
+        return Response.json({email:input.email});
+      }
+      assert.match(url,/accounts:signInWithEmailLink/);
+      const pending=issued.get(input.oobCode);
+      if(!pending||pending.used||pending.email!==input.email)return new Response(null,{status:400});
+      pending.used=true;
+      return Response.json({email:input.email,localId:input.email,refreshToken:'provider-token'});
+    },
+  });
+  const mailInput=(email,code)=>{
+    const pending=issued.get(code);
+    const received=new URLSearchParams({mode:'signIn',oobCode:code,continueUrl:pending.continueUrl});
+    const redirect=new URL(auth.landing(received));
+    assert.equal(redirect.origin,origin);
+    assert.equal(redirect.search,'?parent=1');
+    const fields=new URLSearchParams(redirect.hash.slice(1));
+    return {email,code:fields.get('emailCode'),state:fields.get('emailState')};
+  };
+
+  const inviteA=await invite(a,'p01');
+  const inviteB=await invite(b,'p02');
+  await auth.send({email:b.email,invite:inviteA});
+  assert.equal(issued.size,0);
+  await auth.send({email:a.email,invite:inviteA});
+  await auth.send({email:a.email,invite:inviteA});
+  await auth.send({email:b.email,invite:inviteB});
+  const [codeA,codeB]=issued.keys();
+  assert.equal(issued.size,2);
+  await assert.rejects(auth.redeem(mailInput(b.email,codeA)),{status:403});
+  const first=await auth.redeem(mailInput(a.email,codeA));
+  const second=await auth.redeem(mailInput(b.email,codeB));
+  assert.deepEqual(Object.keys(first).sort(),['email','invite','uid','verifiedMailbox']);
+  await portal.claim(first,first.invite);
+  await portal.claim(second,second.invite);
+  await assert.rejects(auth.redeem(mailInput(a.email,codeA)),{status:403});
+  const childA=(await portal.dashboard(first)).children[0];
+  const childB=(await portal.dashboard(second)).children[0];
+  assert.equal(childA.name,catalog.players[0].name);
+  assert.equal(childB.name,catalog.players[1].name);
+  const answer={linkId:childA.linkId,matchId:'upcoming',status:'available',version:null};
+  await assert.rejects(portal.answer(second,answer),{status:404});
+  await portal.answer(first,answer);
+  assert.equal((await portal.dashboard(first)).children[0].matches.find(m=>m.id==='upcoming').answer,'available');
+  assert.equal((await portal.dashboard(second)).children[0].matches.find(m=>m.id==='upcoming').answer,'pending');
+
+  now+=61000;
+  await auth.send({email:a.email});
+  assert.equal(issued.size,3);
+  const newLink=mailInput(a.email,[...issued.keys()].at(-1));
+  now+=15*60*1000;
+  await assert.rejects(auth.redeem(newLink),{status:403});
 });
 
 test('two linked carers require a current version and cannot change past or processed matches',async()=>{

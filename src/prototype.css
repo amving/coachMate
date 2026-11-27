@@ -1543,7 +1543,7 @@ h2 { font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
 .parent-portal .parent-scroll{flex:1;min-height:0}
 .parent-content{display:grid;align-content:start;gap:14px;padding:16px 16px max(24px,env(safe-area-inset-bottom))}
 .parent-content h1,.parent-content h2,.parent-content h3,.parent-content p{margin:0}
-.parent-child,.parent-card,.parent-access-settings,.parent-invitation-link{display:grid;gap:10px}
+.parent-child,.parent-card,.parent-access-settings,.parent-invitation-link,.parent-email-login{display:grid;gap:10px}
 .parent-child{padding-bottom:10px}
 .parent-content h1{font-size:22px}
 .parent-content h2{font-size:16px}

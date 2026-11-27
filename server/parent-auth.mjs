@@ -17,6 +17,10 @@ export function parentAuth({clientId,clientSecret,secret,origin,apiOrigin}) {
     `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${secure?'; Secure':''}`;
   const redirect = (res,location) => res.writeHead(302,{Location:location}).end();
   const finish = (res,status) => redirect(res,origin+'/?parent=1&auth='+status);
+  const sessionCookie = ({uid,email,verifiedMailbox}) => {
+    const saved = {kind:'parent',uid,email,verifiedMailbox,csrf:random(),expires:Date.now()+SESSION_AGE*1000};
+    return cookie(sessionName,sealSession(saved,secret),SESSION_AGE);
+  };
 
   return {
     session(cookies) {
@@ -54,12 +58,14 @@ export function parentAuth({clientId,clientSecret,secret,origin,apiOrigin}) {
         if(profile?.email_verified!==true||profile.nonce!==attempt.nonce||!email||typeof profile.sub!=='string'||!profile.sub)return finish(res,'failed');
         // Google can verify current mailbox ownership for Gmail and hosted Workspace accounts.
         const verifiedMailbox = email.endsWith('@gmail.com')||(typeof profile.hd==='string'&&profile.hd.length>0);
-        const saved = {kind:'parent',uid:profile.sub,email,verifiedMailbox,csrf:random(),expires:Date.now()+SESSION_AGE*1000};
-        res.setHeader('Set-Cookie',[cookie(sessionName,sealSession(saved,secret),SESSION_AGE),clearAttempt]);
+        res.setHeader('Set-Cookie',[sessionCookie({uid:profile.sub,email,verifiedMailbox}),clearAttempt]);
         return redirect(res,origin+'/?parent=1');
       } catch {
         return finish(res,'failed');
       }
+    },
+    createSession(res, identity) {
+      res.setHeader('Set-Cookie',sessionCookie(identity));
     },
     clear(res) {
       res.setHeader('Set-Cookie',cookie(sessionName,'',0));

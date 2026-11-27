@@ -70,7 +70,7 @@ test('coach creates a scoped parent link and can revoke the existing link',async
  await page.getByRole('button',{name:'Instellingen openen',exact:true}).click();
  await page.locator('.settings-group > summary').filter({hasText:'Oudertoegang'}).click();
  await page.getByRole('combobox',{name:'Speler voor ouderuitnodiging',exact:true}).selectOption('p01');
- await page.getByLabel('Google-e-mailadres van de ouder',{exact:true}).fill(parent);
+ await page.getByLabel('E-mailadres van de ouder',{exact:true}).fill(parent);
  await page.getByRole('button',{name:'Persoonlijke ouderlink maken',exact:true}).click();
  await expect(page.getByLabel('Persoonlijke ouderlink',{exact:true})).toHaveValue(createdUrl);
  await page.getByRole('button',{name:'Intrekken',exact:true}).click();

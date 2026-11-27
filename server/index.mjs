@@ -14,6 +14,7 @@ import { serveStatic } from './static.mjs';
 import {sealSession,openSession} from './session.mjs';
 import { ParentStore } from './parent-store.mjs';
 import { parentAuth } from './parent-auth.mjs';
+import { parentEmailLogin } from './parent-email.mjs';
 import { ParentPortal, parentEmail, projectParentAnswers, withoutParentProjection } from './parents.mjs';
 import {prepareRoundJob,queueInvitationBatch,workerReady,serviceDataToken} from './invitations.mjs';
 
@@ -48,6 +49,12 @@ const parentPortal = parentEnabled ? new ParentPortal(
     catch (error) { if (error instanceof HttpError && error.status===404) return null; throw error; }
   }, parentTeams, origin,
 ) : null;
+const parentEmailKey = process.env.COACHMATE_PARENT_EMAIL_API_KEY;
+const authEmulator = !production && process.env.FIREBASE_AUTH_EMULATOR_HOST;
+const parentMail = parentPortal && parentEmailKey ? parentEmailLogin({
+  apiKey:parentEmailKey, origin, apiOrigin, secret:parentSessionSecret, portal:parentPortal,
+  identityBase:authEmulator ? 'http://' + authEmulator + '/identitytoolkit.googleapis.com' : 'https://identitytoolkit.googleapis.com',
+}) : null;
 async function loadCoachTeam(snapshot, team, loaded = loadTeam(snapshot, team)) {
   if (!parentPortal?.enabled(team)) return loaded;
   const answers = await parentPortal.coachResponses(team);
@@ -107,11 +114,28 @@ const server = http.createServer(async (req, res) => {
     if(path.startsWith('/auth/parent/')||path==='/api/parent'||path.startsWith('/api/parent/')){
       const active=parentLogin?.session(requestCookies);
       if(req.method==='GET'&&path==='/api/parent/session'){
-        return send(res,200,{parentEnabled,authenticated:Boolean(active),role:active?.kind,email:active?.email,csrf:active?.csrf});
+        return send(res,200,{parentEnabled,parentEmailEnabled:Boolean(parentMail),authenticated:Boolean(active),role:active?.kind,email:active?.email,csrf:active?.csrf});
       }
       if(!parentLogin)throw new HttpError(503,'Het ouderportaal is hier nog niet beschikbaar.');
       if(req.method==='GET'&&path==='/auth/parent/login')return await parentLogin.login(res);
       if(req.method==='GET'&&path==='/auth/parent/callback')return await parentLogin.callback(res,url.searchParams,requestCookies);
+      if(req.method==='GET'&&path==='/auth/parent/email'&&parentMail){
+        return res.writeHead(302,{Location:parentMail.landing(url.searchParams)}).end();
+      }
+      if(req.method==='POST'&&parentMail&&['/api/parent/email/request','/api/parent/email/redeem'].includes(path)){
+        if(req.headers.origin!==origin||!req.headers['content-type']?.startsWith('application/json')){
+          throw new HttpError(403,'Ongeldig verzoek. Herlaad de pagina.');
+        }
+        const input = await body(req);
+        if(path==='/api/parent/email/request'){
+          await parentMail.send(input);
+          return send(res,200,{ok:true});
+        }
+        const identity = await parentMail.redeem(input);
+        if(identity.invite)await parentPortal.claim(identity,identity.invite);
+        parentLogin.createSession(res,identity);
+        return send(res,200,{ok:true});
+      }
       if(!active)throw new HttpError(401,'Log eerst in als ouder.');
       if(req.method==='POST'&&(req.headers.origin!==origin||req.headers['x-csrf-token']!==active.csrf)){
         throw new HttpError(403,'Ongeldig verzoek. Herlaad de pagina.');

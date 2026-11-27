@@ -1215,7 +1215,7 @@ function downloadBackup(contents: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 type ParentRequest=(path:string,data?:unknown)=>Promise<any>;
-type ParentSession={authenticated:boolean;parentEnabled?:boolean;role?:'parent'|'coach';email?:string};
+type ParentSession={authenticated:boolean;parentEnabled?:boolean;parentEmailEnabled?:boolean;role?:'parent'|'coach';email?:string};
 type ParentAnswerView={
   id:string;date:string;time:string;opponent:string;venue:string;
   answer:Availability;editable:boolean;processed:boolean;version:string|null;
@@ -1230,11 +1230,19 @@ const parentInviteStorage='coachmate:parent-invitation';
 function ParentPortalScreen({api,session,loading,request,connectionError,reconnect}:{api:string;session:ParentSession|null;loading:boolean;request:ParentRequest;connectionError:string;reconnect:()=>void}) {
   const keyboard=useKeyboard();
   const [code,setCode]=useState('');
+  const [email,setEmail]=useState('');
+  const [emailLogin,setEmailLogin]=useState(false);
+  const [mailLink,setMailLink]=useState(()=>{
+    const fragment=new URLSearchParams(window.location.hash.slice(1));
+    const code=fragment.get('emailCode'),state=fragment.get('emailState');
+    return code&&state?{code,state}:null;
+  });
   const [children,setChildren]=useState<ParentChildView[]|null>(null);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState(()=>{
     const outcome=new URLSearchParams(window.location.search).get('auth');
     if(outcome==='cancelled')return 'De Google-aanmelding is geannuleerd. Je kunt opnieuw inloggen.';
+    if(outcome==='email-invalid')return 'Deze inloglink is ongeldig. Vraag een nieuwe link aan.';
     return outcome==='failed'?'Inloggen met Google is niet gelukt. Probeer opnieuw met het account van je uitnodiging.':'';
   });
   const [notice,setNotice]=useState('');
@@ -1247,7 +1255,7 @@ function ParentPortalScreen({api,session,loading,request,connectionError,reconne
       if(fragment&&/^[A-Za-z0-9_-]{43}$/.test(fragment))sessionStorage.setItem(parentInviteStorage,fragment);
       setCode(fragment&&/^[A-Za-z0-9_-]{43}$/.test(fragment)?fragment:sessionStorage.getItem(parentInviteStorage)??'');
     } catch {if(fragment)setCode(fragment);}
-    if(fragment)window.history.replaceState(null,'',window.location.pathname+window.location.search);
+    if(fragment||mailLink)window.history.replaceState(null,'',window.location.pathname+window.location.search);
   },[]);
 
   const refresh=async()=>{
@@ -1261,6 +1269,23 @@ function ParentPortalScreen({api,session,loading,request,connectionError,reconne
     if(session?.authenticated&&session.role==='parent')void refresh();
     else {setChildren(null);setDrafts({});}
   },[session?.authenticated,session?.role,session?.email]);
+
+  async function submitEmail(event:React.FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(active.current)return;
+    active.current=true;setBusy(true);setError('');setNotice('');keyboard.hide();
+    try{
+      if(mailLink){
+        await request('/api/parent/email/redeem',{email,...mailLink});
+        try{sessionStorage.removeItem(parentInviteStorage);}catch{}
+        window.location.replace('/?parent=1');
+      }else{
+        await request('/api/parent/email/request',{email,invite:code});
+        setNotice('Als dit e-mailadres gekoppeld of uitgenodigd is, ontvang je een inloglink. Controleer ook je spammap.');
+      }
+    }catch(e){setError((e as Error).message);}
+    finally{active.current=false;setBusy(false);}
+  }
 
   async function accept(){
     if(active.current)return;
@@ -1296,16 +1321,24 @@ function ParentPortalScreen({api,session,loading,request,connectionError,reconne
     <header className="parent-portal-header"><small>CoachMate</small><strong>Beschikbaarheid</strong></header>
     <MobileScroll className="parent-scroll"><main className="screen-content parent-content">
       {loading?<p role="status">CoachMate wordt geladen…</p>:null}
-      {!loading&&!signedIn&&<section className="parent-card"><h1>CoachMate voor ouders</h1>
+      {!loading&&(!signedIn||mailLink)&&<section className="parent-card"><h1>CoachMate voor ouders</h1>
         <p>Koppel je eigen kind met een persoonlijke uitnodiging van de coach. Daarna kun je voor elke komende wedstrijd je beschikbaarheid doorgeven.</p>
-        {session?.parentEnabled?<a className="primary-button" href={api+'/auth/parent/login'} onClick={()=>keyboard.hide()}>Inloggen met Google als ouder</a>:
+        {session?.parentEnabled?<>{!mailLink&&<a className="primary-button" href={api+'/auth/parent/login'} onClick={()=>keyboard.hide()}>Inloggen met Google als ouder</a>}
+          {session.parentEmailEnabled&&(!(emailLogin||mailLink)?<button type="button" className="secondary-button" onClick={()=>setEmailLogin(true)}>Inloggen via e-mail</button>:
+            <form className="parent-email-login" onSubmit={submitEmail}>
+              {mailLink&&<p>Bevestig het e-mailadres waarop je de link hebt ontvangen.</p>}
+              <label className="form-label">E-mailadres<KeyboardInput type="email" autoComplete="email" value={email} required maxLength={254} disabled={busy} onChange={e=>setEmail(e.target.value)}/></label>
+              <button type="submit" className="primary-button" disabled={busy||!email.trim()}>{mailLink?'Inloggen met deze link':'Stuur een inloglink'}</button>
+              {mailLink&&<button type="button" className="text-button" disabled={busy} onClick={()=>{keyboard.hide();setMailLink(null);setEmailLogin(true);setError('');}}>Nieuwe link aanvragen</button>}
+            </form>)}
+        </>:
           <><p>Het ouderportaal is hier nog niet beschikbaar.</p><button type="button" className="secondary-button" onClick={reconnect}>Opnieuw controleren</button></>}
         <a className="text-button" href="/" onClick={()=>keyboard.hide()}>Naar CoachMate voor coaches</a>
       </section>}
       {connectionError&&<p role="alert" className="editor-error">{connectionError}</p>}
       {error&&<p role="alert" className="editor-error">{error}</p>}
       {notice&&<p role="status" className="parent-confirmed">{notice}</p>}
-      {signedIn&&<>
+      {signedIn&&!mailLink&&<>
         {code&&<section className="parent-card"><h2>Uitnodiging accepteren</h2><p>Koppel het kind dat in je persoonlijke uitnodiging staat.</p>
           <button type="button" className="primary-button" disabled={busy} onClick={()=>void accept()}>Kind koppelen</button>
         </section>}
@@ -1390,7 +1423,7 @@ function ParentAccessSettings({teamSeasonId,players,archived,request}:{teamSeaso
         <label className="form-label">Speler voor ouderuitnodiging<select value={playerId} onChange={e=>{
           const player=players.find(p=>p.id===e.target.value);setPlayerId(e.target.value);setEmail(player?.parentEmail??'');setUrl('');setStatus('');
         }}><option value="">Kies een speler</option>{players.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        <label className="form-label">Google-e-mailadres van de ouder<KeyboardInput type="email" value={email} onChange={e=>{setEmail(e.target.value);setUrl('');setStatus('');}}/></label>
+        <label className="form-label">E-mailadres van de ouder<KeyboardInput type="email" value={email} onChange={e=>{setEmail(e.target.value);setUrl('');setStatus('');}}/></label>
         <button type="button" className="primary-button" disabled={busy||!playerId||!validParentEmail(email.trim())} onClick={()=>void invite()}>Persoonlijke ouderlink maken</button>
         {url&&<div className="parent-invitation-link">
           <p>De link is zeven dagen geldig en werkt alleen met het gekozen Google-account.</p>
