@@ -74,5 +74,7 @@ test('a coach and two active parent accounts merge offline input and count only 
   assert.ok(teamMatchMinutes(approval.state)>=1);
   assert.equal((await shared.approval(await shared.row(team,match),decision,approval.state)).state,approval.state);
   await shared.processed(team,match);
-  assert.equal(await shared.approval(await shared.row(team,match),decision,approval.state),null);
+  const processed=await shared.row(team,match);
+  assert.equal(await shared.approval(processed,decision,approval.state),null);
+  assert.equal(shared.view(processed,coach,true).live.goals.length,1);
 });

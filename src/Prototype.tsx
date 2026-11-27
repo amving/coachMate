@@ -402,8 +402,8 @@ function SharedMatchBoard({initial,request,coach,onProcessed,refresh}:{initial:S
   const [draft,setDraft]=useState(initial);
   const scope='coachmate:live-shared:'+JSON.stringify([initial.actor,initial.teamSeasonId,initial.matchId]);
   const [device]=useState(()=>{try{
-    const key=scope+':device', id=sessionStorage.getItem(key)??crypto.randomUUID();
-    sessionStorage.setItem(key,id);return id;
+    const key=scope+':device', id=localStorage.getItem(key)??crypto.randomUUID();
+    localStorage.setItem(key,id);return id;
   }catch{return crypto.randomUUID();}});
   const queueKey=scope+':'+device;
   const readQueue=():SharedEvent[]=>JSON.parse(localStorage.getItem(queueKey)??'[]');
@@ -450,6 +450,11 @@ function SharedMatchBoard({initial,request,coach,onProcessed,refresh}:{initial:S
     return ()=>window.removeEventListener('online',online);
   });
   useEffect(()=>{void synchronize();},[]);
+  useEffect(()=>{
+    const changed=(event:StorageEvent)=>{if(event.key===queueKey){try{setQueue(readQueue());}catch{}}};
+    window.addEventListener('storage',changed);
+    return ()=>window.removeEventListener('storage',changed);
+  },[queueKey]);
   useEffect(()=>{
     if(draft.status!=='open'||draft.live.runningSince===null)return;
     const timer=window.setInterval(()=>setTime(Date.now()),1000);
