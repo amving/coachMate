@@ -1,8 +1,9 @@
 import {sameRoundRows} from '../src/availability-workflow.ts';
+import {isProcessed} from '../src/result-only.ts';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { OAuth2Client } from 'google-auth-library';
+import { GoogleAuth, OAuth2Client } from 'google-auth-library';
 import { coachReducer, parseState } from '../src/coach-state.ts';
 import { SheetsStore, HttpError, loadTeam, stateTables } from './sheets.mjs';
 import { createAvailabilityForm, checkAvailabilityForm, readFormResponses, importResponses, formInvitations, connectPersonalLinks, completePreparedForm } from './forms.mjs';
@@ -11,6 +12,8 @@ import { clubMigration } from './clubs.mjs';
 import { applyActionBatch } from '../src/action-batch.ts';
 import { serveStatic } from './static.mjs';
 import {sealSession,openSession} from './session.mjs';
+import { ParentStore, parentAppTransport } from './parent-store.mjs';
+import { ParentPortal, parentEmail, projectParentAnswers, withoutParentProjection } from './parents.mjs';
 import {prepareRoundJob,queueInvitationBatch,workerReady,serviceDataToken} from './invitations.mjs';
 import {appStoreFromEnvironment} from './firestore-app-store.mjs';
 
@@ -30,6 +33,23 @@ function requireCoachTeam(access, team){
   return team;
 }
 const sessionSecret = process.env.GOOGLE_SESSION_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+const parentTeams = new Set((process.env.COACHMATE_PARENT_TEAMS || '').split(',').map(s=>s.trim()).filter(Boolean));
+const parentProject = appStore ? process.env.COACHMATE_APP_FIRESTORE_PROJECT : process.env.COACHMATE_PARENT_PROJECT;
+const parentEnabled = process.env.COACHMATE_PARENT_ENABLED==='true' && Boolean(parentProject && parentTeams.size && configured);
+const parentPortal = parentEnabled ? new ParentPortal(
+  new ParentStore(appStore?parentAppTransport(appStore.connection):new GoogleAuth({scopes:['https://www.googleapis.com/auth/datastore']}),
+    parentProject, appStore?undefined:process.env.COACHMATE_PARENT_DATABASE),
+  async team => {
+    const store=appStore??new SheetsStore(new GoogleAuth({scopes:['https://www.googleapis.com/auth/spreadsheets.readonly']}),spreadsheetId);
+    try { return loadTeam(await store.read(), team).state; }
+    catch (error) { if (error instanceof HttpError && error.status===404) return null; throw error; }
+  }, parentTeams, origin,
+) : null;
+async function loadCoachTeam(snapshot, team, loaded = loadTeam(snapshot, team)) {
+  if (!parentPortal?.enabled(team)) return loaded;
+  const answers = await parentPortal.coachResponses(team);
+  return {...projectParentAnswers(loaded,answers), parentPortalEnabled:true};
+}
 const sessions = new Map();
 const attempts = new Map();
 const random = () => randomBytes(32).toString('base64url');
@@ -77,21 +97,24 @@ const server = http.createServer(async (req, res) => {
       if(saved?.kind==='coach' && typeof saved.email==='string' && typeof saved.csrf==='string' &&
         (appStore ? saved.uid?.startsWith('google:') : allowed.includes(saved.email.toLowerCase())&&saved.tokens)) {
         const auth=client();if(saved.tokens)auth.setCredentials(saved.tokens);active={...saved,auth};if(sessions.size>=200)sessions.delete(sessions.keys().next().value);sessions.set(sid,active);
+      } else if (saved?.kind==='parent' && parentPortal && typeof saved.uid==='string' && parentEmail(saved.email) && typeof saved.csrf==='string') {
+        active=saved;
       }
     }
-    const coachAccess=appStore&&active?await appStore.getCoachAccess(active.uid):null;
-    if(appStore&&!coachAccess?.admin&&!coachAccess?.teams.length)active=null;
-    if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf, dataSource:appStore?'firestore':'sheets' });
+    const coachAccess=appStore&&active?.kind==='coach'?await appStore.getCoachAccess(active.uid):null;
+    if(appStore&&active?.kind==='coach'&&!coachAccess?.admin&&!coachAccess?.teams.length)active=null;
+    if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, parentEnabled, role:active?.kind, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf, dataSource:appStore?'firestore':'sheets' });
     if (req.method === 'GET' && url.pathname === '/auth/login') {
-      if (!configured) throw new HttpError(503, 'Google OAuth is nog niet ingesteld.');
+      const parent = url.searchParams.get('role') === 'parent';
+      if (parent ? !parentPortal : !configured) throw new HttpError(503, 'Google-aanmelding is hier nog niet ingesteld.');
       if (attempts.size > 100) throw new HttpError(429, 'Probeer later opnieuw.');
       const oauth = client(); const state = random();
       const { codeVerifier, codeChallenge } = await oauth.generateCodeVerifierAsync();
       const nonce = random(); attempts.set(state, { codeVerifier, nonce, expires: Date.now() + 600000 });
-      res.setHeader('Set-Cookie', cookie('coach_oauth', sealSession({kind:'oauth',state,codeVerifier,nonce,expires:Date.now()+600000},sessionSecret), 600));
+      res.setHeader('Set-Cookie', cookie('coach_oauth', sealSession({kind:'oauth',role:parent?'parent':'coach',state,codeVerifier,nonce,expires:Date.now()+600000},sessionSecret), 600));
       const scope=['openid','email'];
-      if(!appStore)scope.push('https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/forms.body','https://www.googleapis.com/auth/forms.responses.readonly');
-      res.writeHead(302, { Location: oauth.generateAuthUrl({ access_type: appStore?'online':'offline', prompt:appStore?'select_account':active?.auth.credentials.refresh_token?undefined:'consent', scope, state, nonce, code_challenge: codeChallenge, code_challenge_method: 'S256' }) }); return res.end();
+      if(!parent&&!appStore)scope.push('https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/forms.body','https://www.googleapis.com/auth/forms.responses.readonly');
+      res.writeHead(302, { Location: oauth.generateAuthUrl({ access_type: parent||appStore?'online':'offline', prompt:parent||appStore?'select_account':active?.auth?.credentials.refresh_token?undefined:'consent', scope, state, nonce, code_challenge: codeChallenge, code_challenge_method: 'S256' }) }); return res.end();
     }
     if (req.method === 'GET' && url.pathname === '/auth/callback') {
       const state = url.searchParams.get('state'); const sealed=openSession(cookies(req).coach_oauth,sessionSecret); const attempt=sealed?.kind==='oauth'&&sealed.state===state?sealed:null;
@@ -102,13 +125,21 @@ const server = http.createServer(async (req, res) => {
       oauth.setCredentials(tokens);
       const ticket = await oauth.verifyIdToken({ idToken: tokens.id_token, audience: process.env.GOOGLE_CLIENT_ID });
       const profile = ticket.getPayload();
-      if (profile?.email_verified!==true || typeof profile.email!=='string' || profile.nonce !== attempt.nonce) throw new HttpError(403, 'Google kon dit account niet verifiëren.');
+      if (profile?.email_verified!==true || !parentEmail(profile.email)||!googleAccount(profile.sub) || profile.nonce !== attempt.nonce) throw new HttpError(403, 'Google kon dit account niet verifiëren.');
+      if (attempt.role==='parent') {
+        if (!parentPortal) throw new HttpError(503, 'Het ouderportaal is niet actief.');
+        const age=8*3600;
+        const saved={kind:'parent',uid:profile.sub,email:parentEmail(profile.email),csrf:random(),expires:Date.now()+age*1000};
+        if (sid) sessions.delete(sid);
+        res.setHeader('Set-Cookie',[cookie('coach_session',sealSession(saved,sessionSecret),age),cookie('coach_oauth','',0)]);
+        res.writeHead(302,{Location:origin+'/?parent=1'}); return res.end();
+      }
       const uid=googleAccount(profile.sub), access=appStore?await appStore.getCoachAccess(uid):null;
       if(appStore?!access?.admin&&!access?.teams.length:!allowed.includes(profile.email.toLowerCase())){
         throw new HttpError(403,'Dit Google-account heeft geen coachtoegang.');
       }
       if (sid) sessions.delete(sid);
-      const refresh_token=tokens.refresh_token || (active?.email===profile.email?active.auth.credentials.refresh_token:undefined);
+      const refresh_token=tokens.refresh_token || (active?.email===profile.email?active?.auth?.credentials.refresh_token:undefined);
       const age=!appStore&&refresh_token?30*24*3600:8*3600;
       const credentials=refresh_token?{refresh_token}:{access_token:tokens.access_token,expiry_date:tokens.expiry_date,token_type:tokens.token_type};
       const saved={kind:'coach',email:profile.email,csrf:random(),...(appStore?{uid}:{tokens:credentials}),expires:Date.now()+age*1000};
@@ -118,19 +149,63 @@ const server = http.createServer(async (req, res) => {
     if (!active) throw new HttpError(401, 'Log eerst in met Google.');
     if (req.method === 'POST' && (req.headers.origin !== origin || req.headers['x-csrf-token'] !== active.csrf)) throw new HttpError(403, 'Ongeldig verzoek. Herlaad de pagina.');
     if (req.method === 'POST' && url.pathname === '/api/logout') { sessions.delete(sid); res.setHeader('Set-Cookie', cookie('coach_session', '', 0)); return send(res, 200, { ok: true }); }
+    if (active.kind==='parent') {
+      if (!parentPortal) throw new HttpError(503, 'Het ouderportaal is niet actief.');
+      if (req.method==='GET' && url.pathname==='/api/parent') return send(res,200,await parentPortal.dashboard(active));
+      if (req.method==='POST' && url.pathname==='/api/parent/claim') {
+        const input=await body(req);
+        return send(res,200,await parentPortal.claim(active,input?.code));
+      }
+      if (req.method==='POST' && url.pathname==='/api/parent/answer') return send(res,200,await parentPortal.answer(active,await body(req)));
+      throw new HttpError(403, 'Deze functie is voor coaches.');
+    }
     const store = activeStore(active.auth);
+    if (url.pathname==='/api/parent-access' || url.pathname.startsWith('/api/parent-access/')) {
+      if (!parentPortal) throw new HttpError(404, 'Het ouderportaal is niet actief.');
+      if (req.method==='GET' && url.pathname==='/api/parent-access') {
+        const team=requireCoachTeam(coachAccess,url.searchParams.get('team'));
+        loadTeam(await store.read(),team);
+        return send(res,200,await parentPortal.list(team));
+      }
+      if (req.method==='POST') {
+        const input=await body(req);
+        requireCoachTeam(coachAccess,input?.teamSeasonId);
+        const snapshot=await store.read();
+        const loaded=loadTeam(snapshot,input.teamSeasonId);
+        if (url.pathname==='/api/parent-access/invite') return send(res,200,await parentPortal.invite(loaded.state,input));
+        if (url.pathname==='/api/parent-access/revoke') return send(res,200,await parentPortal.revoke(input.teamSeasonId,input.linkId));
+        if (url.pathname==='/api/parent-access/release') {
+          const output=await serial(async()=>{
+            const fresh=await store.read(),team=input.teamSeasonId;
+            const raw=loadTeam(fresh,team);
+            const current=projectParentAnswers(raw,await parentPortal.coachResponses(team));
+            const m=raw.state.catalog.matches.find(m=>m.id===input.matchId);
+            const key=input.matchId+'/'+input.playerId;
+            if (raw.state.catalog.archived || !m || isProcessed(raw.state,m.id) || !current.parentAnswers?.[key]?.coachOverride ||
+                raw.revision!==input.revision || current.sourceToken!==input.sourceToken) throw new HttpError(409,'Vernieuw de wedstrijd. De coachcorrectie is gewijzigd of de wedstrijd is afgesloten.');
+            const next={...raw.state,formUpdates:{...raw.state.formUpdates}};
+            delete next.formUpdates[key];
+            await store.write(fresh,stateTables(fresh,team,next,raw.revision+1));
+            const saved=await store.read();
+            return {...publicState(await loadCoachTeam(saved,team)),distribution:distributionData(saved,team)};
+          });
+          return send(res,200,output);
+        }
+      }
+      throw new HttpError(404, 'Niet gevonden.');
+    }
     if (req.method === 'GET' && url.pathname === '/api/teams') {
       const snapshot=await store.read(),{tables}=snapshot;
       const teams=tables.TeamSeasons.filter(team=>!appStore||coachAccess.admin||coachAccess.teams.includes(team.teamSeasonId));
       const seasons=appStore?tables.Seasons.filter(season=>teams.some(team=>team.seasonId===season.seasonId)):tables.Seasons;
       const preferred=url.searchParams.get('team'), chosen=teams.find(team=>team.teamSeasonId===preferred)??(teams.length===1?teams[0]:null);
-      return send(res, 200, {seasons,teams,...(chosen?{...publicState(loadTeam(snapshot,chosen.teamSeasonId)),distribution:distributionData(snapshot,chosen.teamSeasonId)}:{})});
+      return send(res, 200, {seasons,teams,...(chosen?{...publicState(await loadCoachTeam(snapshot,chosen.teamSeasonId)),distribution:distributionData(snapshot,chosen.teamSeasonId)}:{})});
     }
-    if (req.method === 'GET' && url.pathname === '/api/state') { const snapshot=await store.read(),team=requireCoachTeam(coachAccess,url.searchParams.get('team'));return send(res,200,{...publicState(loadTeam(snapshot,team)),distribution:distributionData(snapshot,team)}); }
+    if (req.method === 'GET' && url.pathname === '/api/state') { const snapshot=await store.read(),team=requireCoachTeam(coachAccess,url.searchParams.get('team'));return send(res,200,{...publicState(await loadCoachTeam(snapshot,team)),distribution:distributionData(snapshot,team)}); }
     if (req.method === 'GET' && url.pathname === '/api/forms') {
       const snapshot = await store.read(); const {tables}=snapshot; const team = requireCoachTeam(coachAccess,url.searchParams.get('team'));
       const forms = tables.Forms.filter(f => f.teamSeasonId === team);
-      const loaded=loadTeam(snapshot,team);
+      const loaded=await loadCoachTeam(snapshot,team);
       return send(res, 200, { forms, invites: formInvitations(forms,tables.FormInvites),jobs:tables.FormJobs.filter(row=>row.teamSeasonId===team),deliveries:tables.FormDeliveries.filter(row=>row.teamSeasonId===team),mailReady:workerReady(tables)&&tables.FormJobs.some(row=>row.jobId==='worker'&&row.type==='worker-invitations-v3'),revision:loaded.revision,sourceToken:loaded.sourceToken,serviceDataToken:serviceDataToken(tables) });
     }
     if (req.method === 'GET' && url.pathname === '/api/forms/status') {
@@ -147,7 +222,9 @@ const server = http.createServer(async (req, res) => {
       throw new HttpError(409,'Deze functie is nog niet aangesloten op de Firestore-pilot.');
     }
     const output = await serial(async () => {
-      const snapshot = await store.read(); const loaded = loadTeam(snapshot, input.teamSeasonId);
+      const snapshot = await store.read();
+      const raw = loadTeam(snapshot,input.teamSeasonId);
+      const loaded = await loadCoachTeam(snapshot,input.teamSeasonId,raw);
       if (loaded.state.catalog.archived) throw new HttpError(403, 'Dit seizoen is gearchiveerd en alleen leesbaar.');
       if(url.pathname==='/api/forms/invite' && snapshot.tables.FormDeliveries.some(row=>row.batchId===input.batchId)) {
         const repeated=queueInvitationBatch(snapshot,loaded.state,input);
@@ -159,7 +236,7 @@ const server = http.createServer(async (req, res) => {
         const migration = clubMigration(snapshot, input.teamSeasonId, input);
         await store.write(snapshot, migration.replacements);
         const saved = await store.read();
-        return { ...publicState(loadTeam(saved, migration.teamSeasonId)), teams: saved.tables.TeamSeasons };
+        return { ...publicState(await loadCoachTeam(saved, migration.teamSeasonId)), teams: saved.tables.TeamSeasons };
       }
       let state = loaded.state; let extra = {}; let detail = {};
       if (url.pathname === '/api/action-batch') {
@@ -234,10 +311,10 @@ const server = http.createServer(async (req, res) => {
         extra = { FormResponses: log }; detail = { imported, invalidCodes };
       }
       const serviceOnly=['/api/forms/create','/api/forms/prepare','/api/forms/finalize','/api/forms/invite','/api/forms/link'].includes(url.pathname) || (url.pathname==='/api/forms/import' && detail.imported===0);
-      const replacements=serviceOnly?{}:stateTables(snapshot,input.teamSeasonId,state,loaded.revision+1);
+      const replacements=serviceOnly?{}:stateTables(snapshot,input.teamSeasonId,withoutParentProjection(state,raw.state,loaded.state),loaded.revision+1);
       const resultOnlyWrite=url.pathname==='/api/action-batch'&&input.actions.every(action=>action.type==='save-result');
       await store.write(snapshot, { ...(resultOnlyWrite?{State:replacements.State}:replacements), ...extra });
-      const saved=await store.read();return { ...publicState(loadTeam(saved, input.teamSeasonId)), distribution:distributionData(saved,input.teamSeasonId), ...detail };
+      const saved=await store.read();return { ...publicState(await loadCoachTeam(saved, input.teamSeasonId)), distribution:distributionData(saved,input.teamSeasonId), ...detail };
     });
     send(res, 200, output);
   } catch (error) {
