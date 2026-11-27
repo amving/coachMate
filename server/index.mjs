@@ -1,5 +1,5 @@
 import {sameRoundRows} from '../src/availability-workflow.ts';
-import {isProcessed} from '../src/result-only.ts';
+import {isProcessed,processedMatchIds} from '../src/result-only.ts';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -13,6 +13,8 @@ import { applyActionBatch } from '../src/action-batch.ts';
 import { serveStatic } from './static.mjs';
 import {sealSession,openSession} from './session.mjs';
 import { ParentStore, parentAppTransport } from './parent-store.mjs';
+import { parentAuth, authoritativeMailbox } from './parent-auth.mjs';
+import { parentEmailLogin } from './parent-email.mjs';
 import { ParentPortal, parentEmail, projectParentAnswers, withoutParentProjection } from './parents.mjs';
 import {prepareRoundJob,queueInvitationBatch,workerReady,serviceDataToken} from './invitations.mjs';
 import {appStoreFromEnvironment} from './firestore-app-store.mjs';
@@ -32,10 +34,22 @@ function requireCoachTeam(access, team){
   if(appStore&&(!team||!(access?.admin||access?.teams.includes(team))))throw new HttpError(403,'Dit account heeft geen coachtoegang voor dit team.');
   return team;
 }
+const hasCoachAccess = access => Boolean(access?.admin||access?.teams.length);
 const sessionSecret = process.env.GOOGLE_SESSION_SECRET || process.env.GOOGLE_CLIENT_SECRET;
 const parentTeams = new Set((process.env.COACHMATE_PARENT_TEAMS || '').split(',').map(s=>s.trim()).filter(Boolean));
 const parentProject = appStore ? process.env.COACHMATE_APP_FIRESTORE_PROJECT : process.env.COACHMATE_PARENT_PROJECT;
-const parentEnabled = process.env.COACHMATE_PARENT_ENABLED==='true' && Boolean(parentProject && parentTeams.size && configured);
+const parentClientId = process.env.COACHMATE_PARENT_CLIENT_ID;
+const parentClientSecret = process.env.COACHMATE_PARENT_CLIENT_SECRET;
+const parentSessionSecret = process.env.COACHMATE_PARENT_SESSION_SECRET;
+const parentEnabled = process.env.COACHMATE_PARENT_ENABLED==='true' && Boolean(
+  (appStore || spreadsheetId) && parentProject && parentTeams.size && parentClientId && parentClientSecret &&
+  parentSessionSecret?.length>=32 && parentClientId!==process.env.GOOGLE_CLIENT_ID &&
+  parentClientSecret!==process.env.GOOGLE_CLIENT_SECRET && parentClientSecret!==sessionSecret &&
+  ![process.env.GOOGLE_CLIENT_SECRET,sessionSecret,parentClientSecret].includes(parentSessionSecret)
+);
+const parentLogin = parentEnabled ? parentAuth({
+  clientId:parentClientId,clientSecret:parentClientSecret,secret:parentSessionSecret,origin,apiOrigin,subjectToUid:appStore?googleAccount:undefined,
+}) : null;
 const parentPortal = parentEnabled ? new ParentPortal(
   new ParentStore(appStore?parentAppTransport(appStore.connection):new GoogleAuth({scopes:['https://www.googleapis.com/auth/datastore']}),
     parentProject, appStore?undefined:process.env.COACHMATE_PARENT_DATABASE),
@@ -45,6 +59,12 @@ const parentPortal = parentEnabled ? new ParentPortal(
     catch (error) { if (error instanceof HttpError && error.status===404) return null; throw error; }
   }, parentTeams, origin,
 ) : null;
+const parentEmailKey = process.env.COACHMATE_PARENT_EMAIL_API_KEY;
+const authEmulator = !production && process.env.FIREBASE_AUTH_EMULATOR_HOST;
+const parentMail = parentPortal && parentEmailKey ? parentEmailLogin({
+  apiKey:parentEmailKey, origin, apiOrigin, secret:parentSessionSecret, portal:parentPortal,
+  identityBase:authEmulator ? 'http://' + authEmulator + '/identitytoolkit.googleapis.com' : 'https://identitytoolkit.googleapis.com',
+}) : null;
 async function loadCoachTeam(snapshot, team, loaded = loadTeam(snapshot, team)) {
   if (!parentPortal?.enabled(team)) return loaded;
   const answers = await parentPortal.coachResponses(team);
@@ -66,8 +86,15 @@ async function body(req) {
 }
 function publicState(result) {
   const state = structuredClone(result.state);
+  const availabilitySources = Object.fromEntries(Object.entries(state.formUpdates??{}).map(([key,value])=>
+    [key,value.manual?'Coachcorrectie':'Google Forms']));
+  const processed=processedMatchIds(state);
+  for(const [key,answer] of Object.entries(result.parentAnswers??{})){
+    const matchId=key.split('/')[0];
+    if(!answer.coachOverride&&!processed.has(matchId))availabilitySources[key]='Ouderportaal';
+  }
   delete state.formUpdates;
-  return { ...result, state };
+  return { ...result, state, availabilitySources };
 }
 function distributionData(snapshot, team) {
   const {tables}=snapshot, forms=tables.Forms.filter(row=>row.teamSeasonId===team);
@@ -88,7 +115,72 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, apiOrigin);
   try {
     if (production && await serveStatic(req, res, fileURLToPath(new URL('../dist/client/', import.meta.url)))) return;
-    const sid = cookies(req).coach_session;
+    const requestCookies = cookies(req);
+    const path=url.pathname;
+    if(req.method==='GET'&&path==='/auth/login'&&url.searchParams.get('role')==='parent'){
+      if(!parentLogin)throw new HttpError(503,'Het ouderportaal is hier nog niet beschikbaar.');
+      return res.writeHead(302,{Location:apiOrigin+'/auth/parent/login'}).end();
+    }
+    if(req.method==='GET'&&path==='/auth/parent/from-coach'){
+      const identity=appStore&&parentLogin?openSession(requestCookies.coach_session,sessionSecret):null;
+      if(identity?.kind!=='coach'||!identity.uid?.startsWith('google:')||
+        !hasCoachAccess(await appStore.getCoachAccess(identity.uid)))throw new HttpError(403,'Coachsessie niet beschikbaar.');
+      parentLogin.createSession(res,identity);
+      return res.writeHead(302,{Location:origin+'/?parent=1'}).end();
+    }
+    if(req.method==='GET'&&path==='/auth/coach/from-parent'){
+      const identity=appStore&&parentLogin?parentLogin.session(requestCookies):null;
+      if(!identity?.uid.startsWith('google:')||!hasCoachAccess(await appStore.getCoachAccess(identity.uid))){
+        throw new HttpError(403,'Dit account heeft geen coachtoegang.');
+      }
+      const age=Math.max(0,Math.floor((identity.expires-Date.now())/1000));
+      const saved={...identity,kind:'coach',csrf:random()};
+      res.setHeader('Set-Cookie',cookie('coach_session',sealSession(saved,sessionSecret),age));
+      return res.writeHead(302,{Location:origin+'/'}).end();
+    }
+    if(path.startsWith('/auth/parent/')||path==='/api/parent'||path.startsWith('/api/parent/')){
+      const active=parentLogin?.session(requestCookies);
+      if(req.method==='GET'&&path==='/api/parent/session'){
+        const coachAvailable=Boolean(appStore&&active?.uid.startsWith('google:')&&hasCoachAccess(await appStore.getCoachAccess(active.uid)));
+        return send(res,200,{parentEnabled,parentEmailEnabled:Boolean(parentMail),coachAvailable,authenticated:Boolean(active),role:active?.kind,email:active?.email,csrf:active?.csrf});
+      }
+      if(!parentLogin)throw new HttpError(503,'Het ouderportaal is hier nog niet beschikbaar.');
+      if(req.method==='GET'&&path==='/auth/parent/login')return await parentLogin.login(res);
+      if(req.method==='GET'&&path==='/auth/parent/callback')return await parentLogin.callback(res,url.searchParams,requestCookies);
+      if(req.method==='GET'&&path==='/auth/parent/email'&&parentMail){
+        return res.writeHead(302,{Location:parentMail.landing(url.searchParams)}).end();
+      }
+      if(req.method==='POST'&&parentMail&&['/api/parent/email/request','/api/parent/email/redeem'].includes(path)){
+        if(req.headers.origin!==origin||!req.headers['content-type']?.startsWith('application/json')){
+          throw new HttpError(403,'Ongeldig verzoek. Herlaad de pagina.');
+        }
+        const input = await body(req);
+        if(path==='/api/parent/email/request'){
+          await parentMail.send(input);
+          return send(res,200,{ok:true});
+        }
+        const identity = await parentMail.redeem(input);
+        if(identity.invite)await parentPortal.claim(identity,identity.invite);
+        parentLogin.createSession(res,identity);
+        return send(res,200,{ok:true});
+      }
+      if(!active)throw new HttpError(401,'Log eerst in als ouder.');
+      if(req.method==='POST'&&(req.headers.origin!==origin||req.headers['x-csrf-token']!==active.csrf)){
+        throw new HttpError(403,'Ongeldig verzoek. Herlaad de pagina.');
+      }
+      if(req.method==='POST'&&path==='/api/parent/logout'){
+        parentLogin.clear(res);return send(res,200,{ok:true});
+      }
+      if(req.method==='GET'&&path==='/api/parent')return send(res,200,await parentPortal.dashboard(active));
+      if(req.method==='POST'&&path==='/api/parent/claim'){
+        if(!active.verifiedMailbox)throw new HttpError(403,'Dit Google-account kan het huidige eigendom van je mailbox niet bevestigen. Vraag je coach om hulp met de koppeling.');
+        const input=await body(req);
+        return send(res,200,await parentPortal.claim(active,input?.code));
+      }
+      if(req.method==='POST'&&path==='/api/parent/answer')return send(res,200,await parentPortal.answer(active,await body(req)));
+      throw new HttpError(404,'Niet gevonden.');
+    }
+    const sid = requestCookies.coach_session;
     const session = sessions.get(sid);
     if (session && session.expires < Date.now()) sessions.delete(sid);
     let active = session && session.expires >= Date.now() ? session : null;
@@ -97,27 +189,24 @@ const server = http.createServer(async (req, res) => {
       if(saved?.kind==='coach' && typeof saved.email==='string' && typeof saved.csrf==='string' &&
         (appStore ? saved.uid?.startsWith('google:') : allowed.includes(saved.email.toLowerCase())&&saved.tokens)) {
         const auth=client();if(saved.tokens)auth.setCredentials(saved.tokens);active={...saved,auth};if(sessions.size>=200)sessions.delete(sessions.keys().next().value);sessions.set(sid,active);
-      } else if (saved?.kind==='parent' && parentPortal && typeof saved.uid==='string' && parentEmail(saved.email) && typeof saved.csrf==='string') {
-        active=saved;
       }
     }
     const coachAccess=appStore&&active?.kind==='coach'?await appStore.getCoachAccess(active.uid):null;
-    if(appStore&&active?.kind==='coach'&&!coachAccess?.admin&&!coachAccess?.teams.length)active=null;
+    if(appStore&&!hasCoachAccess(coachAccess))active=null;
     if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, parentEnabled, role:active?.kind, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf, dataSource:appStore?'firestore':'sheets' });
     if (req.method === 'GET' && url.pathname === '/auth/login') {
-      const parent = url.searchParams.get('role') === 'parent';
-      if (parent ? !parentPortal : !configured) throw new HttpError(503, 'Google-aanmelding is hier nog niet ingesteld.');
+      if (!configured) throw new HttpError(503, 'Google-aanmelding is hier nog niet ingesteld.');
       if (attempts.size > 100) throw new HttpError(429, 'Probeer later opnieuw.');
       const oauth = client(); const state = random();
       const { codeVerifier, codeChallenge } = await oauth.generateCodeVerifierAsync();
       const nonce = random(); attempts.set(state, { codeVerifier, nonce, expires: Date.now() + 600000 });
-      res.setHeader('Set-Cookie', cookie('coach_oauth', sealSession({kind:'oauth',role:parent?'parent':'coach',state,codeVerifier,nonce,expires:Date.now()+600000},sessionSecret), 600));
+      res.setHeader('Set-Cookie', cookie('coach_oauth', sealSession({kind:'oauth',state,codeVerifier,nonce,expires:Date.now()+600000},sessionSecret), 600));
       const scope=['openid','email'];
-      if(!parent&&!appStore)scope.push('https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/forms.body','https://www.googleapis.com/auth/forms.responses.readonly');
-      res.writeHead(302, { Location: oauth.generateAuthUrl({ access_type: parent||appStore?'online':'offline', prompt:parent||appStore?'select_account':active?.auth?.credentials.refresh_token?undefined:'consent', scope, state, nonce, code_challenge: codeChallenge, code_challenge_method: 'S256' }) }); return res.end();
+      if(!appStore)scope.push('https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/forms.body','https://www.googleapis.com/auth/forms.responses.readonly');
+      res.writeHead(302, { Location: oauth.generateAuthUrl({ access_type: appStore?'online':'offline', prompt:appStore?'select_account':active?.auth?.credentials.refresh_token?undefined:'consent', scope, state, nonce, code_challenge: codeChallenge, code_challenge_method: 'S256' }) }); return res.end();
     }
     if (req.method === 'GET' && url.pathname === '/auth/callback') {
-      const state = url.searchParams.get('state'); const sealed=openSession(cookies(req).coach_oauth,sessionSecret); const attempt=sealed?.kind==='oauth'&&sealed.state===state?sealed:null;
+      const state = url.searchParams.get('state'); const sealed=openSession(requestCookies.coach_oauth,sessionSecret); const attempt=sealed?.kind==='oauth'&&sealed.role!=='parent'&&sealed.state===state?sealed:null;
       if (!attempt || attempt.expires < Date.now()) throw new HttpError(403, 'Inloggen verlopen. Probeer opnieuw.');
       attempts.delete(state);
       const oauth = client();
@@ -126,39 +215,21 @@ const server = http.createServer(async (req, res) => {
       const ticket = await oauth.verifyIdToken({ idToken: tokens.id_token, audience: process.env.GOOGLE_CLIENT_ID });
       const profile = ticket.getPayload();
       if (profile?.email_verified!==true || !parentEmail(profile.email)||!googleAccount(profile.sub) || profile.nonce !== attempt.nonce) throw new HttpError(403, 'Google kon dit account niet verifiëren.');
-      if (attempt.role==='parent') {
-        if (!parentPortal) throw new HttpError(503, 'Het ouderportaal is niet actief.');
-        const age=8*3600;
-        const saved={kind:'parent',uid:profile.sub,email:parentEmail(profile.email),csrf:random(),expires:Date.now()+age*1000};
-        if (sid) sessions.delete(sid);
-        res.setHeader('Set-Cookie',[cookie('coach_session',sealSession(saved,sessionSecret),age),cookie('coach_oauth','',0)]);
-        res.writeHead(302,{Location:origin+'/?parent=1'}); return res.end();
-      }
       const uid=googleAccount(profile.sub), access=appStore?await appStore.getCoachAccess(uid):null;
-      if(appStore?!access?.admin&&!access?.teams.length:!allowed.includes(profile.email.toLowerCase())){
+      if(appStore?!hasCoachAccess(access):!allowed.includes(profile.email.toLowerCase())){
         throw new HttpError(403,'Dit Google-account heeft geen coachtoegang.');
       }
       if (sid) sessions.delete(sid);
       const refresh_token=tokens.refresh_token || (active?.email===profile.email?active?.auth?.credentials.refresh_token:undefined);
       const age=!appStore&&refresh_token?30*24*3600:8*3600;
       const credentials=refresh_token?{refresh_token}:{access_token:tokens.access_token,expiry_date:tokens.expiry_date,token_type:tokens.token_type};
-      const saved={kind:'coach',email:profile.email,csrf:random(),...(appStore?{uid}:{tokens:credentials}),expires:Date.now()+age*1000};
+      const saved={kind:'coach',email:profile.email,csrf:random(),...(appStore?{uid,verifiedMailbox:authoritativeMailbox(parentEmail(profile.email),profile)}:{tokens:credentials}),expires:Date.now()+age*1000};
       res.setHeader('Set-Cookie', [cookie('coach_session', sealSession(saved,sessionSecret), age), cookie('coach_oauth', '', 0)]);
       res.writeHead(302, { Location: `${origin}/?google=connected` }); return res.end();
     }
-    if (!active) throw new HttpError(401, 'Log eerst in met Google.');
+    if (!active) throw new HttpError(parentLogin?.session(requestCookies)?403:401,'Log in met je coachaccount.');
     if (req.method === 'POST' && (req.headers.origin !== origin || req.headers['x-csrf-token'] !== active.csrf)) throw new HttpError(403, 'Ongeldig verzoek. Herlaad de pagina.');
     if (req.method === 'POST' && url.pathname === '/api/logout') { sessions.delete(sid); res.setHeader('Set-Cookie', cookie('coach_session', '', 0)); return send(res, 200, { ok: true }); }
-    if (active.kind==='parent') {
-      if (!parentPortal) throw new HttpError(503, 'Het ouderportaal is niet actief.');
-      if (req.method==='GET' && url.pathname==='/api/parent') return send(res,200,await parentPortal.dashboard(active));
-      if (req.method==='POST' && url.pathname==='/api/parent/claim') {
-        const input=await body(req);
-        return send(res,200,await parentPortal.claim(active,input?.code));
-      }
-      if (req.method==='POST' && url.pathname==='/api/parent/answer') return send(res,200,await parentPortal.answer(active,await body(req)));
-      throw new HttpError(403, 'Deze functie is voor coaches.');
-    }
     const store = activeStore(active.auth);
     if (url.pathname==='/api/parent-access' || url.pathname.startsWith('/api/parent-access/')) {
       if (!parentPortal) throw new HttpError(404, 'Het ouderportaal is niet actief.');

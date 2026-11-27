@@ -13,7 +13,7 @@ test('parents accept their link and update upcoming matches without coach access
  await page.route(api+'/**',async route=>{
   const request=route.request(),path=new URL(request.url()).pathname;
   calls.push({path,payload:request.method()==='POST'?request.postDataJSON():undefined});
-  if(path==='/api/session')return route.fulfill({json:{authenticated:true,configured:true,parentEnabled:true,role:'parent',csrf:'fixture'}});
+  if(path==='/api/parent/session')return route.fulfill({json:{authenticated:true,parentEnabled:true,role:'parent',csrf:'fixture'}});
   if(path==='/api/parent/claim'){linked=true;return route.fulfill({json:{ok:true}});}
   if(path==='/api/parent/answer'){
    const answer=request.postDataJSON();next.answer=answer.status;next.version='saved-v1';
@@ -38,23 +38,30 @@ test('parents accept their link and update upcoming matches without coach access
  await expect(page.getByRole('group',{name:'Beschikbaarheid voor Eerdere club'})).toHaveCount(0);
  expect(calls.find(c=>c.path==='/api/parent/claim')?.payload).toEqual({code:invitation});
  expect(calls.find(c=>c.path==='/api/parent/answer')?.payload).toEqual({linkId:'linked-child',matchId:'upcoming',status:'unavailable',version:null});
- expect(calls.every(c=>c.path==='/api/session'||c.path.startsWith('/api/parent'))).toBe(true);
+ expect(calls.every(c=>c.path==='/api/parent'||c.path.startsWith('/api/parent/'))).toBe(true);
  await page.reload();
  await expect(page.getByText('Huidige antwoord: Afwezig',{exact:true})).toBeVisible();
 });
 test('coach creates a scoped parent link and can revoke the existing link',async({page})=>{
- const catalog=demoCatalog(),state=createTeamState(catalog,4,6);
+ const catalog=demoCatalog();
+ catalog.matches=catalog.matches.map((match,index)=>index===0?{...match,date:'2099-09-14'}:match);
+ const state=createTeamState(catalog,4,6);
  const parent='parent@example.test';
  const linkId='test-parent-link';
  let links=[{id:linkId,playerId:'p01',email:parent}];
  const createdUrl='https://coachmate.example.test/?parent=1#uitnodiging='+invitation;
  const adminPosts:{path:string;data:any}[]=[];
  const distribution={forms:[],invites:[],jobs:[],deliveries:[],mailReady:false};
+ const match=catalog.matches[0];
+ state.availability[match.id].p01='available';
+ state.availability[match.id].p02='unavailable';
+ const parentAnswers={[match.id+'/p01']:{status:'available',coachOverride:false}};
+ const availabilitySources={[match.id+'/p01']:'Ouderportaal',[match.id+'/p02']:'Google Forms'};
  await page.route(api+'/**',async route=>{
   const op=route.request(),path=new URL(op.url()).pathname;
   if(op.method()==='POST')adminPosts.push({path,data:op.postDataJSON()});
   if(path==='/api/session')return route.fulfill({json:{configured:true,authenticated:true,role:'coach',email:'coach@example.test',csrf:'test',parentEnabled:true}});
-  if(path==='/api/teams'||path==='/api/state')return route.fulfill({json:{state,revision:1,sourceToken:'test',teams:[catalog],seasons:[],distribution,parentPortalEnabled:true}});
+  if(path==='/api/teams'||path==='/api/state')return route.fulfill({json:{state,revision:1,sourceToken:'test',teams:[catalog],seasons:[],distribution,parentPortalEnabled:true,parentAnswers,availabilitySources}});
   if(path==='/api/forms')return route.fulfill({json:distribution});
   if(path==='/api/parent-access/invite')return route.fulfill({json:{url:createdUrl,expiresAt:Date.now()+86400000}});
   if(path==='/api/parent-access/revoke')links=[];
@@ -65,7 +72,7 @@ test('coach creates a scoped parent link and can revoke the existing link',async
  await page.getByRole('button',{name:'Instellingen openen',exact:true}).click();
  await page.locator('.settings-group > summary').filter({hasText:'Oudertoegang'}).click();
  await page.getByRole('combobox',{name:'Speler voor ouderuitnodiging',exact:true}).selectOption('p01');
- await page.getByLabel('Google-e-mailadres van de ouder',{exact:true}).fill(parent);
+ await page.getByLabel('E-mailadres van de ouder',{exact:true}).fill(parent);
  await page.getByRole('button',{name:'Persoonlijke ouderlink maken',exact:true}).click();
  await expect(page.getByLabel('Persoonlijke ouderlink',{exact:true})).toHaveValue(createdUrl);
  await page.getByRole('button',{name:'Intrekken',exact:true}).click();
@@ -76,4 +83,15 @@ test('coach creates a scoped parent link and can revoke the existing link',async
   {path:'/api/parent-access/invite',data:{teamSeasonId:catalog.teamSeasonId,playerId:'p01',email:parent}},
   {path:'/api/parent-access/revoke',data:{teamSeasonId:catalog.teamSeasonId,linkId}},
  ]);
+ await page.getByRole('navigation').getByRole('button',{name:'Beschikbaarheid',exact:true}).click();
+ await page.getByRole('button',{name:'Reacties bijwerken',exact:true}).click();
+ await expect(page.getByText('Reacties bijgewerkt. Coachcorrecties blijven behouden.',{exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'Bekijk reacties '+match.opponent,exact:true}).click();
+ const detail=page.getByRole('dialog');
+ await expect(detail.locator('.response-row').filter({hasText:'Daan'})).toContainText('Ouderportaal');
+ await expect(detail.locator('.response-row').filter({hasText:'Mats'})).toContainText('Google Forms');
+ await detail.getByRole('button',{name:'Aanpassen',exact:true}).click();
+ await expect(detail.getByLabel('Beschikbaarheid Daan')).toHaveValue('available');
+ await expect(detail.getByLabel('Beschikbaarheid Mats')).toHaveValue('unavailable');
+ expect(adminPosts).toHaveLength(2);
 });
