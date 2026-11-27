@@ -2,7 +2,7 @@ import {isProcessed,processedMatchIds,seasonGoalRows,resultPlayerGoals,parseScor
 import {matchStanding,outcomeLabels,registeredMatchResults} from './history-standings';
 import {invitationProgress,invitationMatches,type InvitationFilter} from './invitation-progress';
 import {newPreparationDraft,readPreparationDraft,keeperScheduleValid,startingLineupValid,startingLineupIssue,preparationPlanCurrent,calculatePreparation,preparationProblem,type PreparationDraft} from './preparation-flow';
-import {mergeRoundRows,sameRoundRows,roundDateValue,preparationComplete} from './availability-workflow';
+import {availabilitySchedule,mergeRoundRows,sameRoundRows,roundDateValue,preparationComplete} from './availability-workflow';
 import {arrangeFormation,formationCatalog,formationsForTeam,formationFitsTeam,formationRoles,positionsForFormation,suggestFormation,validateFormationCatalog,validateFormation,validateFormations,type Formation} from './formations';
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, } from "react";
 import {createPortal} from 'react-dom';
@@ -819,8 +819,16 @@ function RoundPreparation({draft,onChange,onRequested,onDone,onDiscard,onSetting
 }
 
 function AvailabilityScreen({managementOnly=false}:{managementOnly?:boolean}) {
-  const {state,players,matches,seasonName,remote,prepareRound,formLinks,busy,archived,focusMatch,draftScope,navigate,invites,deliveries,refreshForms,refreshDistribution,reloadRoundData,checkForm,settings}=useCoach();
+  const {state,sharedState,players,matches,seasonName,remote,prepareRound,formLinks,busy,archived,focusMatch,draftScope,navigate,invites,deliveries,refreshForms,refreshDistribution,reloadRoundData,checkForm,settings}=useCoach();
   const keyboard=useKeyboard();
+  const [scheduleTime,setScheduleTime]=useState(Date.now);
+  useEffect(()=>{
+    if(managementOnly)return;
+    const update=()=>{if(document.visibilityState==='visible')setScheduleTime(Date.now());};
+    const timer=window.setInterval(update,30_000);
+    document.addEventListener('visibilitychange',update);
+    return ()=>{window.clearInterval(timer);document.removeEventListener('visibilitychange',update);};
+  },[managementOnly]);
   const [roundHistoryOpen,setRoundHistoryOpen]=useState(false),[browsing,setBrowsing]=useState(false);
   const [detail,setDetail]=useState<string|null>(focusMatch),[editingResponse,setEditingResponse]=useState(false);
   useEffect(()=>setEditingResponse(false),[detail]);
@@ -877,7 +885,8 @@ function AvailabilityScreen({managementOnly=false}:{managementOnly?:boolean}) {
 
 
   const selected=matches.find(m=>m.id===detail),values=historyRound===null?state.availability:state.rounds[historyRound]??state.availability;
-  const historical=archived||browsing||Boolean(selected&&isProcessed(state,selected.id));
+  const processed=processedMatchIds(sharedState??state);
+  const historical=archived||browsing||Boolean(selected&&processed.has(selected.id));
   const roundForm=formLinks.find(f=>!f.matchId&&Number(f.round)===selectedRound);
   const roundMatches=matches.filter(m=>m.availabilityRound===selectedRound);
   useEffect(()=>{
@@ -888,10 +897,7 @@ function AvailabilityScreen({managementOnly=false}:{managementOnly?:boolean}) {
     return()=>{active=false;};
   },[roundForm?.formId,roundForm?.prefillDefaults,remote,managementOnly]);
 
-  const today=new Date().setHours(0,0,0,0);
-  const isPast=(m:Match)=>isProcessed(state,m.id)||matchDate(m)<today;
-  const shown=orderedMatches(roundMatches.filter(m=>!isPast(m)));
-  const past=orderedMatches(roundMatches.filter(isPast));
+  const {upcoming,past}=availabilitySchedule(matches,processed,scheduleTime);
   const roundForms=formLinks.filter(f=>Number(f.round)===selectedRound);
   const received=new Set(invites.filter(i=>roundForms.some(f=>f.formId===i.formId)&&i.submittedAt&&players.some(p=>p.id===i.playerId)).map(i=>i.playerId)).size;
   const latestDeliveries=new Map<string,FormDelivery>();
@@ -899,13 +905,21 @@ function AvailabilityScreen({managementOnly=false}:{managementOnly?:boolean}) {
   const deliveryCount=(statuses:string[])=>[...latestDeliveries.values()].filter(row=>statuses.includes(row.status)).length;
   const lastImport=readDraft(`coachmate:last-import:${draftScope}:${selectedRound}`);
   async function updateResponses(){setImportMessage('');try{const ok=await refreshForms(selectedRound);if(ok){setDistributionKnown(true);setDistributionError('');}setImportMessage(ok?'Reacties bijgewerkt. Coachcorrecties blijven behouden.':'Bijwerken niet gelukt. Je bestaande reacties zijn behouden.');}catch{setImportMessage('Geen verbinding. Je bestaande reacties zijn behouden.');}}
-  function matchItem(m:Match,closed=false){const count=counts(state,m.id);return <article className="availability-match compact-availability-match" key={m.id}><button type="button" className="availability-match-button" aria-label={`Bekijk reacties ${m.opponent}`} onClick={event=>{detailTrigger.current=event.currentTarget;setHistoryRound(null);setDetail(m.id);}}><DateTile match={m}/><span className="availability-match-copy"><strong>{m.opponent}</strong><small>{m.time} · {m.venue}{closed?(isProcessed(state,m.id)?' · Afgesloten':' · Nog niet verwerkt'):''}</small><span className="availability-inline-counts"><span>{count.available} aanwezig</span><span>{count.unavailable} afwezig</span><span>{count.pending} onbekend</span></span></span><ChevronRightIcon/></button></article>;}
+  function matchItem(m:Match,closed=false){const count=counts(state,m.id);return <article className="availability-match compact-availability-match" key={m.id}><button type="button" className="availability-match-button" aria-label={`Bekijk reacties ${m.opponent}`} onClick={event=>{detailTrigger.current=event.currentTarget;setHistoryRound(null);setDetail(m.id);}}><DateTile match={m}/><span className="availability-match-copy"><strong>{m.opponent}</strong><small>{m.time} · {m.venue}{closed?(processed.has(m.id)?' · Afgesloten':' · Nog niet verwerkt'):''}</small><span className="availability-inline-counts"><span>{count.available} aanwezig</span><span>{count.unavailable} afwezig</span><span>{count.pending} onbekend</span></span></span><ChevronRightIcon/></button></article>;}
   const selectedValues:Record<string,Availability>=selected?(values[selected.id]??state.availability[selected.id]??{}):{};
   const provenance=(state as CoachState & {formUpdates?:Record<string,{manual?:boolean;time?:string}>}).formUpdates??{};
   const selectedCounts={available:Object.values(selectedValues).filter(v=>v==="available").length,unavailable:Object.values(selectedValues).filter(v=>v==="unavailable").length,pending:Object.values(selectedValues).filter(v=>v==="pending").length};
   const Layout=managementOnly?"div":"main";
   return <Layout className={managementOnly?"round-settings-content":"screen-content availability-screen"}>
     {!managementOnly&&<>
+    <section className="availability-list availability-schedule" aria-label="Reacties per wedstrijd">
+      <div className="section-heading"><h2>Aankomende wedstrijden</h2></div>
+      {upcoming.length?upcoming.map(match=>matchItem(match)):<p className="summary-note">Geen aankomende wedstrijden.</p>}
+      {past.length>0&&<details className="availability-past">
+        <summary><span>Afgelopen wedstrijden</span><span>{past.length}<ChevronDownIcon aria-hidden="true"/></span></summary>
+        <div>{past.map(match=>matchItem(match,true))}</div>
+      </details>}
+    </section>
     <section className="round-response-summary quiet-round-summary" aria-label="Reacties speelronde">
       <div className="active-round-heading active-round-context"><span className="eyebrow">Lopende speelronde</span><div className="round-title-row"><h2>Speelronde {activeRound}</h2><button type="button" className="round-refresh" aria-label="Reacties bijwerken" title="Reacties bijwerken" disabled={archived||busy||!roundMatches.length} onClick={()=>remote?void updateResponses():setImportMessage('Lokale demo: er worden geen Google-reacties opgehaald.')}><ReloadIcon/></button></div>{roundMatches.length>0&&<p>{orderedMatches(roundMatches)[0].shortDate} – {orderedMatches(roundMatches).at(-1)?.shortDate} · {roundMatches.length} wedstrijden</p>}</div>
       {remote?<><p className="response-total"><strong>{distributionKnown?`${received} van ${players.length}`:'…'}</strong><span>gereageerd</span></p>{distributionKnown&&deliveryCount(['failed','uncertain'])>0&&<button type="button" className="text-button request-attention" onClick={()=>setInviteOpen(true)}>{deliveryCount(['failed','uncertain'])} uitnodigingen controleren<ChevronRightIcon/></button>}</>:<p className="response-total"><strong>{players.length} spelers</strong><span>Lokale voorbeeldgegevens</span></p>}
@@ -913,7 +927,6 @@ function AvailabilityScreen({managementOnly=false}:{managementOnly?:boolean}) {
       <button type="button" className="primary-button" disabled={busy||!roundMatches.length} onClick={()=>remote&&!roundForm?void openPreparation(activeRound):setInviteOpen(true)}>Uitnodigingen bekijken<ChevronRightIcon/></button>
       {remote&&formProblem&&<p role="status" className="summary-note">{formProblem} <button type="button" className="text-button" onClick={settings}>Formulierinstellingen</button></p>}{distributionError&&<p role="alert">{distributionError}</p>}{importMessage&&<p role="status" className="availability-import-message">{importMessage}</p>}
     </section>
-    <section className="availability-list" aria-label="Reacties per wedstrijd"><div className="section-heading"><h2>Per wedstrijd</h2></div>{!roundMatches.length&&<p className="summary-note">Nog geen wedstrijden. Bereid je eerste ronde voor.</p>}{orderedMatches(roundMatches).map(m=>matchItem(m))}</section>
     <nav className="availability-next-actions" aria-label="Andere uitvragen"><button type="button" ref={preparationTrigger} className="new-round-entry" disabled={busy||archived} onClick={()=>void openPreparation()}><PlusIcon/><span><strong>{preparation?`Speelronde ${preparation.round} afmaken`:'Nieuwe speelronde'}</strong>{preparation&&<small>Wedstrijden en formulier voorbereiden</small>}</span><ChevronRightIcon/></button><button type="button" className="text-button earlier-rounds" onClick={()=>{keyboard.hide();setRoundHistoryOpen(true);}}>Eerdere speelrondes<ChevronRightIcon/></button></nav>{draftError&&<p role="alert">{draftError}</p>}
 
     </>}
