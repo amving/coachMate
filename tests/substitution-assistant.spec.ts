@@ -15,6 +15,16 @@ async function plan(page:Page){await page.getByRole('button',{name:'Wisselplan m
 
 test('plan review, explicit acceptance and execution produce one atomic swap then a fresh proposal',async({page})=>{
  await open(page);const before=await stored(page),sheet=await plan(page);
+ const proposal=await stored(page) as CoachState;
+ const change=nextAdvice(proposal)!;
+ const incoming=change.field.filter(id=>!proposal.live.field.includes(id));
+ expect(incoming.length).toBeGreaterThan(0);
+ const forecast=sheet.getByRole('list',{name:'Verwachte speeltijd van invallers'});
+ for(const id of incoming){
+  const player=proposal.catalog!.players.find(p=>p.id===id)!;
+  await expect(forecast.getByText(player.shortName,{exact:true})).toBeVisible();
+ }
+ await expect(forecast).toContainText('min verwacht, streeftijd');
  await expect(sheet.getByRole('button',{name:'Wissel als uitgevoerd registreren',exact:true})).toBeDisabled();
  await sheet.getByRole('button',{name:'Advies accepteren',exact:true}).click();
  expect((await stored(page)).live.field).toEqual(before.live.field);expect((await stored(page)).live.swaps).toHaveLength(0);

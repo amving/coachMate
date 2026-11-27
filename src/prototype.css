@@ -1552,3 +1552,9 @@ h2 { font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
 .result-score-inputs > span { padding-bottom:12px; text-align:center; }
 .result-only-entry textarea { width:100%; min-height:210px; padding:12px; border:1px solid var(--cm-line); border-radius:12px; background:white; color:var(--cm-ink); font:inherit; font-size:16px; line-height:1.6; }
 .result-only-entry h2 { font-size:16px; margin:0; }
+.assistant-swap-summary,.assistant-review,.assistant-alternatives section{display:grid;gap:8px}
+.assistant-forecast{margin:0;padding:0;list-style:none;display:grid;gap:4px;color:#46596f;font-size:13px;line-height:1.45}
+.assistant-forecast strong{color:#172e4a}
+.assistant-alternatives{display:grid;gap:10px}
+.assistant-alternatives section{padding:12px;background:#f4f6f9;border:1px solid #e4e9f0;border-radius:12px}
+.assistant-alternatives section p{margin:0}
