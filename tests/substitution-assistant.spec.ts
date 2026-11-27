@@ -78,3 +78,61 @@ test('reminder is driven by active playing time and defer waits two active minut
  const at=current.assistant['test-match'].plan.intervals.find((s:any)=>s.field.some((id:string)=>!stateField.includes(id)))?.startMs;
  expect(at).toBeDefined();if(at-current.live.elapsedMs>30000)await page.clock.fastForward(at-current.live.elapsedMs-20000);await expect(page.locator('.assistant-reminder')).toBeVisible();
 });
+
+test('Gemini compares anonymous valid options, falls back and leaves execution to the coach',async({page})=>{
+ const base=fixture();
+ const email='coach@example.test',team=base.catalog!.teamSeasonId,key=journalKey(email,team);
+ let requests=0,uploads=0;
+ await page.route('http://127.0.0.1:4175/**',async route=>{
+  const path=new URL(route.request().url()).pathname;
+  if(path==='/api/session')return route.fulfill({json:{configured:true,authenticated:true,email,csrf:'test',geminiSwaps:true}});
+  if(path==='/api/teams')return route.fulfill({json:{teams:[{teamSeasonId:team,seasonId:base.catalog!.seasonId,teamName:'Team'}],seasons:[{seasonId:base.catalog!.seasonId,name:'Season',archived:false}]}});
+  if(path==='/api/state')return route.fulfill({json:{state:base,revision:1,sourceToken:'one'}});
+  if(path==='/api/assistant/gemini-swaps'){
+   const payload=route.request().postDataJSON();
+   expect(Object.keys(payload)).toEqual(['options']);
+   expect(payload.options.length).toBeGreaterThanOrEqual(2);
+   for(const option of payload.options){
+    expect(Object.keys(option).sort()).toEqual(['id','keepsKeeper','minuteGap','rotation','swaps']);
+    expect(Object.values(option).every(value=>typeof value==='number'||typeof value==='boolean')).toBe(true);
+   }
+   requests++;
+   if(requests===1)return route.fulfill({json:{advice:{option:99,reason:'minutes'}}});
+   if(requests===2)return route.abort('failed');
+   return route.fulfill({json:{advice:{option:1,reason:'minutes'}}});
+  }
+  if(path==='/api/action-batch')uploads++;
+  return route.fulfill({json:{forms:[],invites:[]}});
+ });
+ await page.goto('/?device=real',{waitUntil:'domcontentloaded'});
+ await expect(page.locator('.coach-app')).toHaveAttribute('data-source','google');
+ await nav(page,'Live').click();
+ const sheet=await plan(page);
+ const ask=sheet.getByRole('button',{name:'Vraag Gemini om advies'});
+ const fallback=sheet.getByText('Gemini is nu niet beschikbaar. Je kunt het lokale wisseladvies gebruiken.');
+ const accept=sheet.getByRole('button',{name:'Advies accepteren',exact:true});
+ const execute=sheet.getByRole('button',{name:'Wissel als uitgevoerd registreren',exact:true});
+ const liveJournal=async()=>JSON.parse((await page.evaluate(k=>localStorage.getItem(k),key))!);
+ await ask.click();
+ await expect(fallback).toBeVisible();
+ await expect(accept).toBeEnabled();
+ await ask.click();
+ await expect(fallback).toBeVisible();
+ await expect(execute).toBeDisabled();
+ await ask.click();
+ await expect(sheet.getByText(/Gemini kiest de wissel bij/)).toBeVisible();
+ await expect(sheet.getByText(/De verwachte speeltijd wijkt maximaal/)).toBeVisible();
+ expect((await liveJournal()).actions.map((a:any)=>a.type)).toEqual(['assistant-plan']);
+ await sheet.getByRole('button',{name:'Neem over als voorstel',exact:true}).click();
+ await expect.poll(async()=>(await liveJournal()).actions.map((a:any)=>a.type)).toEqual(['assistant-plan','assistant-plan']);
+ await expect(execute).toBeDisabled();
+ await accept.click();
+ expect((await liveJournal()).state.live.field).toEqual(base.live.field);
+ expect((await liveJournal()).state.live.swaps).toHaveLength(0);
+ await execute.click();
+ await expect(sheet).toHaveCount(0);
+ const after=await liveJournal();
+ expect(after.actions.filter((a:any)=>a.type==='assistant-execute')).toHaveLength(1);
+ expect(after.state.live.field).not.toEqual(base.live.field);
+ expect(uploads).toBe(0);
+});

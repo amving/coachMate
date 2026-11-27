@@ -12,6 +12,7 @@ import { applyActionBatch } from '../src/action-batch.ts';
 import { serveStatic } from './static.mjs';
 import {sealSession,openSession} from './session.mjs';
 import {prepareRoundJob,queueInvitationBatch,workerReady,serviceDataToken} from './invitations.mjs';
+import {createGeminiSwapAdvisor,swapPromptOptions} from './gemini-swaps.mjs';
 
 const production = process.env.NODE_ENV === 'production';
 const port = Number(process.env.PORT || process.env.API_PORT || 4175);
@@ -20,6 +21,8 @@ const apiOrigin = process.env.API_ORIGIN || `http://127.0.0.1:${port}`;
 if (production && (!origin.startsWith('https://') || apiOrigin !== origin)) throw new Error('Production requires one HTTPS APP_ORIGIN and matching API_ORIGIN.');
 const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID;
 const allowed = (process.env.COACH_EMAILS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+const geminiSwapAdvisor = process.env.COACHMATE_GEMINI_SWAP_ENABLED === 'true' ? createGeminiSwapAdvisor(process.env.COACHMATE_GEMINI_PROJECT) : null;
+const lastSwapRequest = new Map();
 const configured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && spreadsheetId && allowed.length);
 const sessionSecret = process.env.GOOGLE_SESSION_SECRET || process.env.GOOGLE_CLIENT_SECRET;
 const sessions = new Map();
@@ -70,7 +73,7 @@ const server = http.createServer(async (req, res) => {
         const auth=client();auth.setCredentials(saved.tokens);active={...saved,auth};if(sessions.size>=200)sessions.delete(sessions.keys().next().value);sessions.set(sid,active);
       }
     }
-    if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf });
+    if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf, ...(active && geminiSwapAdvisor ? {geminiSwaps:true} : {}) });
     if (req.method === 'GET' && url.pathname === '/auth/login') {
       if (!configured) throw new HttpError(503, 'Google OAuth is nog niet ingesteld.');
       if (attempts.size > 100) throw new HttpError(429, 'Probeer later opnieuw.');
@@ -101,6 +104,15 @@ const server = http.createServer(async (req, res) => {
     if (!active) throw new HttpError(401, 'Log eerst in met Google.');
     if (req.method === 'POST' && (req.headers.origin !== origin || req.headers['x-csrf-token'] !== active.csrf)) throw new HttpError(403, 'Ongeldig verzoek. Herlaad de pagina.');
     if (req.method === 'POST' && url.pathname === '/api/logout') { sessions.delete(sid); res.setHeader('Set-Cookie', cookie('coach_session', '', 0)); return send(res, 200, { ok: true }); }
+    if (req.method === 'POST' && url.pathname === '/api/assistant/gemini-swaps') {
+      if (!geminiSwapAdvisor) throw new HttpError(404, 'Gemini-wisseladvies staat uit.');
+      const options = swapPromptOptions((await body(req))?.options);
+      if (!options) throw new HttpError(422, 'Ongeldige wisselopties.');
+      const coach = active.email.toLowerCase(), now = Date.now();
+      if (now - (lastSwapRequest.get(coach) ?? 0) < 10000) throw new HttpError(429, 'Wacht even voor je opnieuw Gemini vraagt.');
+      lastSwapRequest.set(coach,now);
+      return send(res, 200, { advice: await geminiSwapAdvisor(options) });
+    }
     const store = new SheetsStore(active.auth, spreadsheetId);
     if (req.method === 'GET' && url.pathname === '/api/teams') {
       const snapshot=await store.read(),{tables}=snapshot;
