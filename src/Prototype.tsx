@@ -1,4 +1,5 @@
 import {isProcessed,processedMatchIds,seasonGoalRows,resultPlayerGoals,parseScoreEvents,scoreEventsText,validateResultOnly,type ResultOnlyMatch} from './result-only';
+import {matchStanding,outcomeLabels,registeredMatchResults} from './history-standings';
 import {invitationProgress,invitationMatches,type InvitationFilter} from './invitation-progress';
 import {newPreparationDraft,readPreparationDraft,keeperScheduleValid,startingLineupValid,startingLineupIssue,preparationPlanCurrent,calculatePreparation,preparationProblem,type PreparationDraft} from './preparation-flow';
 import {mergeRoundRows,sameRoundRows,roundDateValue,preparationComplete} from './availability-workflow';
@@ -16,7 +17,7 @@ import { parentEmailValid, invitationText, invitationParts, defaultInvitationMes
 import { personalFormUrl, safeShortFormUrl, PREFILL_MARKER } from "./form-links";
 import { matchShareText } from "./match-share";
 import { localActionTypes } from "./action-batch";
-import { journalKey, readJournal, readDraft, previewJournalRecovery, archiveConfirmedJournal, rebuildJournal, storeRebuiltJournal, recoveryStorage, type LocalJournal } from "./local-cache";
+import { journalKey, readJournal, readDraft, previewJournalRecovery, archiveConfirmedJournal, archiveProcessedMatchJournal, rebuildJournal, storeRebuiltJournal, recoveryStorage, type LocalJournal } from "./local-cache";
 import { adviceContext, adviceEpoch, adviceFor, explainAdvice, generateAdvice, nextAdvice } from './substitution/recommendations';
 import { defaultPolicy, normalizePolicy } from './substitution/policy';
 import type { SubstitutionPolicy } from './substitution/policy';
@@ -338,7 +339,7 @@ function LiveScreen() {
   if (hideCompleted) return <main className="screen-content">
     <h1>Geen actieve wedstrijd</h1>
     <p>Verwerkte wedstrijden staan in de wedstrijdhistorie.</p>
-    {persistence}
+    {hasPendingSave&&persistence}
     {remote&&<button type="button" className="text-button" disabled={busy} onClick={refreshMatchStatus}><ReloadIcon/>Vernieuwen</button>}
     {picker}
   </main>;
@@ -1000,6 +1001,7 @@ function StatsScreen({homeRequest}:{homeRequest:number}) {
   const draftIds = Array.from(new Set([...Object.keys(drafts), ...Object.keys(ownGoalDrafts),...resultDraftIds]));
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
+  const [historyRound, setHistoryRound] = useState('');
   const [ranking, setRanking] = useState<StatsRanking>("goals");
   const [statsView,setStatsView]=useState<"ranking"|"players">("ranking");
   const [playerDetailId,setPlayerDetailId]=useState<string|null>(null),[notesOpen,setNotesOpen]=useState(false),[entryInfoOpen,setEntryInfoOpen]=useState(false);
@@ -1084,7 +1086,81 @@ function StatsScreen({homeRequest}:{homeRequest:number}) {
   const standings=rankings[ranking];
   const knownKeeper = fullRows.reduce((sum,r)=>sum+(r.keeperMinutesKnown===false?0:r.keeperMinutes),0);
   const newMatch = editable.find(m => !completed.has(m.id));
-  if (historyOpen) return <main className="screen-content stats-screen history-screen"><section className="entry-header"><div><h1>Wedstrijdhistorie</h1><p className="muted">Bekijk, voer in en corrigeer wedstrijdcijfers.</p></div></section>{draftIds.length>0&&<section className="draft-list"><h2>Bewaarde concepten</h2>{draftIds.map(id=><button type="button" className="history-row" key={id} onClick={()=>{keyboard.hide();setSelectedMatchId(id);setResultEntry(resultDraftIds.includes(id));setEditing(true);}}><span><strong>{matches.find(m=>m.id===id)?.opponent}</strong><small>Concept hervatten</small></span><ChevronRightIcon/></button>)}</section>}<section className="history-entry-action"><button type="button" className="primary-button" disabled={archived||!newMatch} onClick={()=>{keyboard.hide();if(newMatch){setSelectedMatchId(newMatch.id);setEditing(true);}}}><PlusIcon/>Wedstrijd invoeren</button><p className="summary-note">{archived?"Dit seizoen is alleen-lezen.":newMatch?"Voer cijfers in voor een wedstrijd die nog niet is verwerkt.":"Alle wedstrijden zijn verwerkt. Een actieve wedstrijd verwerk je via Live."}</p></section><section className="history-match-list"><h2>Geregistreerde wedstrijden</h2><label className="history-search-field"><MagnifyingGlassIcon/><KeyboardInput className="history-search" aria-label="Wedstrijdhistorie zoeken" placeholder="Tegenstander of datum" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>{historyQuery&&<button type="button" aria-label="Zoekopdracht wissen" onClick={()=>setHistoryQuery("")}><Cross1Icon/></button>}</label><div className="history-grouped-list">{!matches.some(m=>completed.has(m.id)&&`${m.opponent} ${m.date} ${m.shortDate}`.toLowerCase().includes(historyQuery.toLowerCase()))&&<div className="empty-state compact"><MagnifyingGlassIcon/><strong>Geen wedstrijden gevonden</strong><p>Probeer een andere tegenstander of datum.</p></div>}{orderedMatches(matches.filter(m=>completed.has(m.id)&&`${m.opponent} ${m.date} ${m.shortDate}`.toLowerCase().includes(historyQuery.toLowerCase()))).reverse().map(m=><button type="button" className="history-row" key={m.id} onClick={()=>{keyboard.hide();setSelectedMatchId(m.id);setEditing(true);}}><DateTile match={m}/><span className="history-match-copy"><strong>{m.opponent}</strong><small>{m.time} · {m.venue}</small></span>{(()=>{const result=recordedMatchResult(state,m.id);return result&&<b>{scoreInVenueOrder(m,result.goalsFor,result.goalsAgainst).join("–")}</b>;})()}<ChevronRightIcon/></button>)}</div></section></main>;
+  if(historyOpen){
+    const rounds=[...new Set(matches.map(match=>match.availabilityRound))].sort((a,b)=>b-a);
+    const round=rounds.find(value=>String(value)===historyRound);
+    const registered=registeredMatchResults(state,matches).filter(row=>round===undefined||row.match.availabilityRound===round);
+    const standing=matchStanding(registered);
+    const known=standing.played-standing.unknown;
+    const showTotals=known>0||standing.played===0;
+    const difference=standing.goalDifference>0?`+${standing.goalDifference}`:standing.goalDifference<0?`−${Math.abs(standing.goalDifference)}`:'0';
+    const outcomeKeys=['win','draw','loss'] as const;
+    const byId=new Map(registered.map(row=>[row.match.id,row.result]));
+    const query=historyQuery.trim().toLocaleLowerCase('nl-NL');
+    const visible=orderedMatches(registered.map(row=>row.match).filter(m=>
+      `${m.opponent} ${m.date} ${m.shortDate}`.toLocaleLowerCase('nl-NL').includes(query)
+    )).reverse();
+
+    return <main className="screen-content stats-screen history-screen">
+      <section className="entry-header history-heading">
+        <h1>Wedstrijdhistorie</h1>
+        {!archived&&newMatch&&<button type="button" className="text-button" onClick={()=>{
+          keyboard.hide();setSelectedMatchId(newMatch.id);setEditing(true);
+        }}><PlusIcon/>Wedstrijd invoeren</button>}
+      </section>
+      <section className="history-standing" aria-labelledby="history-standing-title">
+        <div className="history-standing-header">
+          <h2 id="history-standing-title">Stand</h2>
+          <select aria-label="Stand bekijken" value={round===undefined?'':String(round)} onChange={event=>setHistoryRound(event.target.value)}>
+            <option value="">Hele seizoen</option>
+            {rounds.map(value=><option key={value} value={value}>Speelronde {value}</option>)}
+          </select>
+        </div>
+        <dl className="history-standing-metrics" aria-live="polite">
+          <div className="history-standing-points"><dt>Punten</dt><dd>{showTotals?standing.points:'—'}</dd></div>
+          <div><dt>Wedstrijden</dt><dd>{standing.played}</dd></div>
+          <div><dt>Doelsaldo</dt><dd>{showTotals?difference:'—'}</dd></div>
+          {outcomeKeys.map(key=><div key={key} data-outcome={key}><dt>{outcomeLabels[key]}</dt><dd>{showTotals?standing[key]:'—'}</dd></div>)}
+        </dl>
+        {known>0&&<div className="history-outcome-bar" aria-hidden="true">
+          {outcomeKeys.filter(key=>standing[key]>0).map(key=><span key={key} data-outcome={key} style={{flexGrow:standing[key]}}/>)}
+        </div>}
+        {standing.unknown>0&&<p className="history-standing-note">{standing.unknown===1?'1 wedstrijd zonder bekende eindstand':`${standing.unknown} wedstrijden zonder bekende eindstand`}</p>}
+      </section>
+      {draftIds.length>0&&<section className="draft-list"><h2>Bewaarde concepten</h2>{draftIds.map(id=>
+        <button type="button" className="history-row" key={id} onClick={()=>{
+          keyboard.hide();setSelectedMatchId(id);setResultEntry(resultDraftIds.includes(id));setEditing(true);
+        }}><span><strong>{matches.find(m=>m.id===id)?.opponent}</strong><small>Concept hervatten</small></span><ChevronRightIcon/></button>
+      )}</section>}
+      <section className="history-match-list">
+        <h2>Geregistreerde wedstrijden</h2>
+        <label className="history-search-field">
+          <MagnifyingGlassIcon/>
+          <KeyboardInput className="history-search" aria-label="Wedstrijdhistorie zoeken" placeholder="Tegenstander of datum" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>
+          {historyQuery&&<button type="button" aria-label="Zoekopdracht wissen" onClick={()=>setHistoryQuery('')}><Cross1Icon/></button>}
+        </label>
+        <div className="history-grouped-list">
+          {!visible.length&&<div className="empty-state compact">
+            <MagnifyingGlassIcon/><strong>{registered.length?'Geen wedstrijden gevonden':'Nog geen geregistreerde wedstrijden'}</strong>
+            {registered.length>0&&<p>Probeer een andere tegenstander of datum.</p>}
+          </div>}
+          {visible.map(m=>{
+            const result=byId.get(m.id);
+            return <button type="button" className="history-row" key={m.id} onClick={()=>{keyboard.hide();setSelectedMatchId(m.id);setEditing(true);}}>
+              <DateTile match={m}/>
+              <span className="history-match-copy"><strong>{m.opponent}</strong><small>{m.time} · {m.venue}</small></span>
+              <span className="history-result">
+                {result?<><b>{scoreInVenueOrder(m,result.goalsFor,result.goalsAgainst).join('–')}</b>
+                  <span className="history-result-badge" data-outcome={result.outcome}>{outcomeLabels[result.outcome]} · {result.points} pnt</span>
+                </>:<span className="history-result-missing">Eindstand onbekend</span>}
+              </span>
+              <ChevronRightIcon/>
+            </button>;
+          })}
+        </div>
+      </section>
+    </main>;
+  }
   const profile=totals.find(row=>row.player.id===playerDetailId);
   const profileOrder=statsView==="ranking"?standings.map(row=>row.player):players;
   const profileIndex=profileOrder.findIndex(player=>player.id===playerDetailId);
@@ -1199,7 +1275,7 @@ function downloadBackup(contents: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 type ParentRequest=(path:string,data?:unknown)=>Promise<any>;
-type ParentSession={authenticated:boolean;parentEnabled?:boolean;role?:'parent'|'coach';email?:string};
+type ParentSession={authenticated:boolean;dataSource?:'sheets'|'firestore';parentEnabled?:boolean;role?:'parent'|'coach';email?:string};
 type ParentAnswerView={
   id:string;date:string;time:string;opponent:string;venue:string;
   answer:Availability;editable:boolean;processed:boolean;version:string|null;
@@ -1483,8 +1559,9 @@ export default function Prototype() {
       phase='google-state';const next=parseState(JSON.stringify(result.state));
       try{if(email)localStorage.setItem(`coachmate:team:${email}`,teamSeasonId);}catch{}
       phase='local-journal';
-      const confirmed=archiveConfirmedJournal(localStorage,email??'',teamSeasonId,next);
-      const cached=confirmed?null:readJournal(localStorage,email??'',teamSeasonId);
+      const archived=archiveConfirmedJournal(localStorage,email??'',teamSeasonId,next)||
+        archiveProcessedMatchJournal(localStorage,email??'',teamSeasonId,next);
+      const cached=archived?null:readJournal(localStorage,email??'',teamSeasonId);
       const conflict=Boolean(cached&&(cached.revision!==result.revision||cached.sourceToken!==result.sourceToken));
       cacheLocked.current=false;setSourceConflict(conflict);setLocalJournal(cached);
       setSharedState(conflict?next:null);
@@ -1535,9 +1612,12 @@ export default function Prototype() {
     keyboard.hide();setRecoveryOpen(true);setRecovery(null);setRecoveryError('');pending.current=true;setBusy(true);
     try{
       const result=await request(`/api/state?team=${encodeURIComponent(draft.teamSeasonId)}`),latest=parseState(JSON.stringify(result.state));
-      if(latest.committedBatches?.includes(draft.id)){
-        localStorage.removeItem(journalKey(draft.account,draft.teamSeasonId));setLocalJournal(null);revision.current={revision:result.revision,sourceToken:result.sourceToken};
-        stateRef.current=latest;dispatch({type:'replace',state:latest});setSourceConflict(false);setSharedState(null);setConnectionError('');setRecoveryOpen(false);setToast('De eerdere opslag is bevestigd.');return;
+      const confirmed=archiveConfirmedJournal(localStorage,draft.account,draft.teamSeasonId,latest);
+      if(confirmed||archiveProcessedMatchJournal(localStorage,draft.account,draft.teamSeasonId,latest)){
+        setLocalJournal(null);revision.current={revision:result.revision,sourceToken:result.sourceToken};
+        stateRef.current=latest;dispatch({type:'replace',state:latest});setSourceConflict(false);setSharedState(null);setConnectionError('');setRecoveryOpen(false);
+        if(confirmed)setToast('De eerdere opslag is bevestigd.');
+        return;
       }
       setRecovery({...result,state:latest,preview:previewJournalRecovery(draft,latest)});
     }catch(error){setRecoveryError((error as Error).message);}
@@ -1585,7 +1665,7 @@ export default function Prototype() {
       if(path==="/api/action-batch" && journalRef.current){const old=journalRef.current;try{localStorage.removeItem(journalKey(old.account,old.teamSeasonId));}catch{}setLocalJournal(null);}
       if(!serviceOnly||!journalRef.current){setSharedState(null);stateRef.current=savedState; dispatch({ type: "replace", state:savedState });}
       if (result.teams) setTeams(result.teams);
-      setToast(path.includes("import") ? `${result.imported} ${path.includes("history") ? result.imported===1?"wedstrijd":"wedstrijden" : result.imported===1?"antwoord":"antwoorden"} verwerkt${result.invalidCodes ? ` · ${result.invalidCodes} ${result.invalidCodes===1?"inzending":"inzendingen"} met ongeldige code overgeslagen` : ""}` : "Opgeslagen in Google Sheets");
+      setToast(path.includes("import") ? `${result.imported} ${path.includes("history") ? result.imported===1?"wedstrijd":"wedstrijden" : result.imported===1?"antwoord":"antwoorden"} verwerkt${result.invalidCodes ? ` · ${result.invalidCodes} ${result.invalidCodes===1?"inzending":"inzendingen"} met ongeldige code overgeslagen` : ""}` : session?.dataSource==="firestore" ? "Opgeslagen in Firestore" : "Opgeslagen in Google Sheets");
       if(!serviceOnly||!journalRef.current)setSourceConflict(false);if(result.distribution)applyForms(result.distribution);else if(path.includes("forms")){try{applyForms(await request(`/api/forms?team=${encodeURIComponent(state.catalog.teamSeasonId)}`));}catch{setConnectionError("Opgeslagen. De verzendstatus kon nog niet worden vernieuwd.");}}
       return true;
     } catch (error) { setSourceConflict((error as Error & {status?:number}).status===409);setConnectionError((error as Error).message + " Je lokale invoer blijft bewaard."); setToast(""); return false; }
@@ -1645,7 +1725,7 @@ export default function Prototype() {
     const next=coachReducer(stateRef.current,action);
     if(next===stateRef.current){if(action.type==='save-result'){return JSON.stringify(next.resultOnly?.[action.matchId])===JSON.stringify(action.result);}if(action.type.startsWith("assistant-")||action.type==="set-formations"||action.type==="set-substitution-policy"||action.type==="set-substitution-profiles"){setConnectionError("Het advies of de instellingen zijn gewijzigd. Bereken opnieuw; je concept blijft bewaard.");return false;}return !["prepare-match","goal","away-goal","edit-goal"].includes(action.type);}
     const account=session?.email??"", teamSeasonId=stateRef.current.catalog!.teamSeasonId;
-    const draft:LocalJournal={...(journalRef.current??{version:1,id:crypto.randomUUID(),account,teamSeasonId,revision:revision.current.revision,sourceToken:revision.current.sourceToken,actions:[]}),actions:[...(journalRef.current?.actions??[]),action],state:next};
+    const draft:LocalJournal={...(journalRef.current??{version:1,id:crypto.randomUUID(),account,teamSeasonId,revision:revision.current.revision,sourceToken:revision.current.sourceToken,baseMatchId:stateRef.current.catalog!.liveMatchId,actions:[]}),actions:[...(journalRef.current?.actions??[]),action],state:next};
     try{if(draft.actions.length>2000)throw new Error();localStorage.setItem(journalKey(account,teamSeasonId),JSON.stringify(draft));}catch{setConnectionError("Lokaal bewaren lukt niet. Maak ruimte vrij of exporteer je concept voordat je verdergaat.");return false;}
     setLocalJournal(draft);stateRef.current=next;dispatch({type:"replace",state:next});return true;
   };
@@ -1675,7 +1755,7 @@ export default function Prototype() {
   const plannedChange=assistant?nextAdvice(state,assistant):null;
   const missedMoment=Boolean(assistant&&['proposed','accepted'].includes(assistant.status)&&assistant.deferUntilMs===undefined&&plannedChange&&state.live.elapsedMs-plannedChange.startMs>60000);
   useEffect(()=>{
-    if(!assistant||busy||needsTeam||inParentPortal||catalog.archived||state.live.phase==='Einde'||state.live.elapsedMs===0&&!state.live.preparation)return;
+    if(!assistant||busy||needsTeam||inParentPortal||catalog.archived||state.live.phase==='Einde'||isProcessed(state,catalog.liveMatchId)||state.live.elapsedMs===0&&!state.live.preparation)return;
     if(assistant.context===assistantContext&&!deferredReady&&!missedMoment)return;
     const key=`${assistantContext}:${deferredReady}:${missedMoment}:${assistant.plan.id}`;
     if(assistantAttempt.current===key)return;
@@ -1683,7 +1763,7 @@ export default function Prototype() {
     try {generateAdvice(state,Date.now());} catch {return;}
     void send({type:'assistant-plan',id:crypto.randomUUID(),eventId:crypto.randomUUID(),expectedEpoch:adviceEpoch(state),now:Date.now()});
   },[assistantContext,deferredReady,missedMoment,busy,needsTeam,inParentPortal,assistant?.plan.id]);
-  const settingsPage = <main className="screen-content settings-screen" aria-label="Instellingen"><p className="settings-intro">Beheer je account, team en gegevens.</p><div className="settings-content"><section className="settings-account"><div className="settings-account-heading"><span className="settings-account-mark"><GearIcon /></span><div><h2>Account en gegevensbron</h2><span className="settings-source-label">{remote ? "Google Sheets" : session?.authenticated ? "Google-team niet geladen" : "Lokale demo"}</span></div></div><p>{session?.authenticated ? `Ingelogd als ${session.email}` : session?.configured ? "Log in om je eigen team te openen." : "Google is nog niet beschikbaar. Controleer de verbinding."}</p>{!session?.authenticated ? <><div className="settings-account-actions"><button type="button" className="primary-button" disabled={!session?.configured} onClick={() => { window.location.href = api + "/auth/login"; }}>Inloggen met Google</button><button type="button" className="text-button" aria-label="Verbinding controleren" onClick={() => { void checkConnection(); }}>Controleren</button></div>{session?.parentEnabled&&<a href="/?parent=1" className="text-button">Naar het ouderportaal</a>}</> : <><label className="form-label">Seizoen en team<select aria-label="Seizoen en team" disabled={busy} value={remote ? catalog.teamSeasonId : ""} onChange={e => { if (e.target.value) void selectTeam(e.target.value); }}><option value="">Kies een teamseizoen</option>{seasons.map(season => <optgroup key={season.seasonId} label={`${season.name}${season.archived ? " · archief" : ""}`}>{teams.filter(t => t.seasonId === season.seasonId).map(team => <option key={team.teamSeasonId} value={team.teamSeasonId}>{team.clubName ? `${team.clubName} · ` : ""}{team.teamName}</option>)}</optgroup>)}</select></label>{remote && <button type="button" className="secondary-button" disabled={busy} onClick={() => { void selectTeam(catalog.teamSeasonId); }}>Gegevens vernieuwen</button>}<button type="button" className="text-button" disabled={busy} onClick={async () => { try { await request("/api/logout", {}); window.location.reload(); } catch { setConnectionError("Uitloggen mislukt. Probeer opnieuw."); } }}>Uitloggen</button></>}{connectionError && <p role="alert">{connectionError}</p>}{loadFailure&&<div className="settings-account-actions"><button type="button" className="primary-button" disabled={busy} onClick={()=>void inspectLoadRecovery()}>Herstel bekijken</button><button type="button" className="secondary-button" onClick={exportLoadRecovery}>Herstelbestand exporteren</button></div>}{busy && <p role="status">Google-gegevens worden verwerkt…</p>}</section><div hidden={needsTeam}>{remote&&parentPortalEnabled&&<ParentAccessSettings key={catalog.teamSeasonId} teamSeasonId={catalog.teamSeasonId} players={catalog.players} archived={catalog.archived} request={request}/>}<details className="settings-group"><summary><div><strong>Team en wedstrijd</strong><span>{catalog.teamName} · {state.team.periods === 2 ? "2 helften" : "4 kwarten"}</span></div><ChevronRightIcon /></summary><div className="settings-panel" inert={busy || needsTeam || (remote && catalog.archived)}><TeamSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`} /></div></details><details className="settings-group"><summary><div><strong>Opstellingsvarianten</strong><span>Formaties voor 6, 8 en 11 spelers</span></div><ChevronRightIcon/></summary><div className="settings-panel" inert={busy||needsTeam||catalog.archived}><FormationSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`}/></div></details><details className="settings-group"><summary><div><strong>AI-wisselassistent</strong><span>Speelminuten, rotatie en keepers</span></div><ChevronRightIcon/></summary><div className="settings-panel" inert={busy||needsTeam||catalog.archived}><AssistantSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`}/></div></details>{remote && <details className="settings-group"><summary><div><strong>Club en team</strong><span>{catalog.clubName || "Clubnaam instellen"} · {catalog.teamName}</span></div><ChevronRightIcon /></summary><div className="settings-panel" inert={busy || needsTeam || catalog.archived}><ClubSettings key={`${catalog.teamSeasonId}-${catalog.clubName}-${catalog.teamName}`} clubName={catalog.clubName ?? ""} teamName={catalog.teamName} onSave={(clubName, teamName) => mutate("/api/club", { clubName, teamName })} /></div></details>}<details className="settings-group"><summary><div><strong>Speelrondes</strong><span>Rondes en wedstrijden beheren</span></div><ChevronRightIcon/></summary><div className="settings-panel"><AvailabilityScreen managementOnly/></div></details>{remote&&<details className="settings-group"><summary><div><strong>Beschikbaarheidsformulier</strong><span>Voorbeeld, opmaak en Google-koppeling</span></div><ChevronRightIcon/></summary><div className="settings-panel"><RoundFormSettings/></div></details>}<details className="settings-group"><summary><div><strong>Gegevens beheren</strong><span>Reservekopie{remote ? " en historische import" : " van deze demo"}</span></div><ChevronRightIcon /></summary><div className="settings-panel">{remote && <button type="button" className="secondary-button" disabled={busy || catalog.archived || needsTeam} onClick={() => { void mutate("/api/history/import", {}); }}>Historische wedstrijden importeren</button>}<p>{remote ? "De Google Sheet bewaart de gegevens per teamseizoen. Maak daarnaast regelmatig een reservekopie." : "Maak regelmatig een export. Het wissen van browsergegevens verwijdert de lokale demo."}</p><button type="button" className="primary-button" onClick={() => { try { const raw = blocked ? localStorage.getItem(STORAGE_KEY) : null; downloadBackup(raw ?? JSON.stringify(state, null, 2)); } catch { setToast("Export van de bestaande opslag is niet beschikbaar"); } }}>Reservekopie exporteren</button>{blocked && <button type="button" className="secondary-button" onClick={() => window.location.reload()}>Opnieuw laden</button>}<p className="muted">{remote ? "Deel de bron uitsluitend met bevoegde coaches." : "Gebruik de lokale demo alleen met voorbeeldgegevens."}</p></div></details></div></div></main>;
+  const settingsPage = <main className="screen-content settings-screen" aria-label="Instellingen"><p className="settings-intro">Beheer je account, team en gegevens.</p><div className="settings-content"><section className="settings-account"><div className="settings-account-heading"><span className="settings-account-mark"><GearIcon /></span><div><h2>Account en gegevensbron</h2><span className="settings-source-label">{remote ? session?.dataSource==="firestore" ? "Firestore-pilot" : "Google Sheets" : session?.authenticated ? "Google-team niet geladen" : "Lokale demo"}</span></div></div><p>{session?.authenticated ? `Ingelogd als ${session.email}` : session?.configured ? "Log in om je eigen team te openen." : "Google is nog niet beschikbaar. Controleer de verbinding."}</p>{!session?.authenticated ? <><div className="settings-account-actions"><button type="button" className="primary-button" disabled={!session?.configured} onClick={() => { window.location.href = api + "/auth/login"; }}>Inloggen met Google</button><button type="button" className="text-button" aria-label="Verbinding controleren" onClick={() => { void checkConnection(); }}>Controleren</button></div>{session?.parentEnabled&&<a href="/?parent=1" className="text-button">Naar het ouderportaal</a>}</> : <><label className="form-label">Seizoen en team<select aria-label="Seizoen en team" disabled={busy} value={remote ? catalog.teamSeasonId : ""} onChange={e => { if (e.target.value) void selectTeam(e.target.value); }}><option value="">Kies een teamseizoen</option>{seasons.map(season => <optgroup key={season.seasonId} label={`${season.name}${season.archived ? " · archief" : ""}`}>{teams.filter(t => t.seasonId === season.seasonId).map(team => <option key={team.teamSeasonId} value={team.teamSeasonId}>{team.clubName ? `${team.clubName} · ` : ""}{team.teamName}</option>)}</optgroup>)}</select></label>{remote && <button type="button" className="secondary-button" disabled={busy} onClick={() => { void selectTeam(catalog.teamSeasonId); }}>Gegevens vernieuwen</button>}<button type="button" className="text-button" disabled={busy} onClick={async () => { try { await request("/api/logout", {}); window.location.reload(); } catch { setConnectionError("Uitloggen mislukt. Probeer opnieuw."); } }}>Uitloggen</button></>}{connectionError && <p role="alert">{connectionError}</p>}{loadFailure&&<div className="settings-account-actions"><button type="button" className="primary-button" disabled={busy} onClick={()=>void inspectLoadRecovery()}>Herstel bekijken</button><button type="button" className="secondary-button" onClick={exportLoadRecovery}>Herstelbestand exporteren</button></div>}{busy && <p role="status">Google-gegevens worden verwerkt…</p>}</section><div hidden={needsTeam}>{remote&&parentPortalEnabled&&<ParentAccessSettings key={catalog.teamSeasonId} teamSeasonId={catalog.teamSeasonId} players={catalog.players} archived={catalog.archived} request={request}/>}<details className="settings-group"><summary><div><strong>Team en wedstrijd</strong><span>{catalog.teamName} · {state.team.periods === 2 ? "2 helften" : "4 kwarten"}</span></div><ChevronRightIcon /></summary><div className="settings-panel" inert={busy || needsTeam || (remote && catalog.archived)}><TeamSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`} /></div></details><details className="settings-group"><summary><div><strong>Opstellingsvarianten</strong><span>Formaties voor 6, 8 en 11 spelers</span></div><ChevronRightIcon/></summary><div className="settings-panel" inert={busy||needsTeam||catalog.archived}><FormationSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`}/></div></details><details className="settings-group"><summary><div><strong>AI-wisselassistent</strong><span>Speelminuten, rotatie en keepers</span></div><ChevronRightIcon/></summary><div className="settings-panel" inert={busy||needsTeam||catalog.archived}><AssistantSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`}/></div></details>{remote && <details className="settings-group"><summary><div><strong>Club en team</strong><span>{catalog.clubName || "Clubnaam instellen"} · {catalog.teamName}</span></div><ChevronRightIcon /></summary><div className="settings-panel" inert={busy || needsTeam || catalog.archived}><ClubSettings key={`${catalog.teamSeasonId}-${catalog.clubName}-${catalog.teamName}`} clubName={catalog.clubName ?? ""} teamName={catalog.teamName} onSave={(clubName, teamName) => mutate("/api/club", { clubName, teamName })} /></div></details>}<details className="settings-group"><summary><div><strong>Speelrondes</strong><span>Rondes en wedstrijden beheren</span></div><ChevronRightIcon/></summary><div className="settings-panel"><AvailabilityScreen managementOnly/></div></details>{remote&&<details className="settings-group"><summary><div><strong>Beschikbaarheidsformulier</strong><span>Voorbeeld, opmaak en Google-koppeling</span></div><ChevronRightIcon/></summary><div className="settings-panel"><RoundFormSettings/></div></details>}<details className="settings-group"><summary><div><strong>Gegevens beheren</strong><span>Reservekopie{remote ? " en historische import" : " van deze demo"}</span></div><ChevronRightIcon /></summary><div className="settings-panel">{remote && <button type="button" className="secondary-button" disabled={busy || catalog.archived || needsTeam} onClick={() => { void mutate("/api/history/import", {}); }}>Historische wedstrijden importeren</button>}<p>{remote ? "De Google Sheet bewaart de gegevens per teamseizoen. Maak daarnaast regelmatig een reservekopie." : "Maak regelmatig een export. Het wissen van browsergegevens verwijdert de lokale demo."}</p><button type="button" className="primary-button" onClick={() => { try { const raw = blocked ? localStorage.getItem(STORAGE_KEY) : null; downloadBackup(raw ?? JSON.stringify(state, null, 2)); } catch { setToast("Export van de bestaande opslag is niet beschikbaar"); } }}>Reservekopie exporteren</button>{remote&&<button type="button" className="secondary-button" onClick={exportLoadRecovery}>Lokale conceptkopieën exporteren</button>}{blocked && <button type="button" className="secondary-button" onClick={() => window.location.reload()}>Opnieuw laden</button>}<p className="muted">{remote ? "Deel de bron uitsluitend met bevoegde coaches." : "Gebruik de lokale demo alleen met voorbeeldgegevens."}</p></div></details></div></div></main>;
   useEffect(() => { if (!settingsOpen) return; const close = (event: KeyboardEvent) => { if (event.key === "Escape") { keyboard.hide(); setSettingsOpen(false); } }; window.addEventListener("keydown", close); return () => window.removeEventListener("keydown", close); }, [settingsOpen, keyboard]);
   const [conceptOptions,setConceptOptions]=useState(false);
   const retrySave=()=>{if(sourceConflict)void reviewRecovery();else void save();};

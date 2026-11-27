@@ -1110,9 +1110,24 @@ h2 { font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
 .history-row > span:not(.date-tile) small { display:block; margin-top:3px; color:var(--cm-muted); font-size:11px; }
 .draft-list .history-row { padding:10px 0; }
 .draft-list .history-row:last-child { border-bottom:0; }
-.history-entry-action { margin:14px 0 22px; }
-.history-entry-action .primary-button { width:100%; font-size:14px; }
-.history-entry-action .summary-note { margin-top:9px; font-size:11px; }
+.history-screen .history-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:2px 8px; margin-bottom:10px; }
+.history-heading .text-button { display:inline-flex; align-items:center; gap:3px; min-height:44px; padding:4px 0; font-size:13px; }
+.history-standing [data-outcome="win"], .history-result-badge[data-outcome="win"] { --outcome-color:#087451; --outcome-fill:#e5f4ed; --outcome-bar:#34a77c; }
+.history-standing [data-outcome="draw"], .history-result-badge[data-outcome="draw"] { --outcome-color:#735417; --outcome-fill:#f7efda; --outcome-bar:#d5a546; }
+.history-standing [data-outcome="loss"], .history-result-badge[data-outcome="loss"] { --outcome-color:#a52d41; --outcome-fill:#fbe9ee; --outcome-bar:#d96a7f; }
+.history-standing { border:1px solid var(--cm-line); border-radius:16px; background:#fff; padding:10px 13px 13px; margin-bottom:14px; }
+.history-standing-header { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:5px; }
+.history-standing-header h2 { margin:0; font-size:16px; }
+.history-standing-header select { width:auto; max-width:65%; min-height:44px; border:0; border-radius:10px; padding:0 8px; color:var(--cm-blue); background:#edf5ff; font:inherit; font-size:13px; font-weight:600; }
+.history-standing-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:0; }
+.history-standing-metrics > div { display:flex; flex-direction:column-reverse; justify-content:center; min-height:53px; padding:6px 8px; border-radius:10px; background:#f4f6fa; }
+.history-standing-metrics dt { color:var(--outcome-color,var(--cm-muted)); font-size:11px; font-weight:600; }
+.history-standing-metrics dd { margin:0 0 1px; font-size:21px; line-height:1.1; font-weight:700; font-variant-numeric:tabular-nums; }
+.history-standing-metrics .history-standing-points { color:#0760bf; background:#eaf3ff; }
+.history-outcome-bar { display:flex; gap:3px; height:5px; margin-top:10px; }
+.history-outcome-bar > span { min-width:4px; border-radius:5px; background:var(--outcome-bar); }
+.history-standing-note { margin:8px 0 0; color:var(--cm-muted); font-size:12px; }
+.history-screen .draft-list { margin-bottom:14px; }
 .history-match-list { border-radius:0; overflow:visible; }
 .history-search-field { display:flex; align-items:center; gap:8px; min-height:46px; padding:0 11px; margin-bottom:12px; border-radius:12px; background:#eaf0f6; color:var(--cm-muted); }
 .history-search-field > svg { width:18px; height:18px; flex-shrink:0; }
@@ -1121,7 +1136,10 @@ h2 { font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
 .history-grouped-list .history-row { gap:9px; min-height:76px; padding:12px; }
 .history-grouped-list .history-row:last-child { border:0; }
 .history-match-copy { flex:1; min-width:0; }
-.history-row > b { font-size:15px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.history-result { display:grid; justify-items:end; gap:5px; flex:0 0 auto; text-align:right; }
+.history-result > b { font-size:16px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.history-result-badge { border-radius:8px; padding:4px 6px; white-space:nowrap; color:var(--outcome-color); background:var(--outcome-fill); font-size:11px; font-weight:600; line-height:1.1; }
+.history-result-missing { max-width:76px; color:var(--cm-muted); font-size:11px; }
 .history-row > svg { width:14px; flex-shrink:0; color:#93a0b3; }
 .entry-context-line { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; color:var(--cm-muted); }
 .entry-context-line button { display:flex; align-items:center; gap:4px; border:0; color:var(--cm-blue); background:transparent; min-height:36px; padding:5px; font-size:12px; }

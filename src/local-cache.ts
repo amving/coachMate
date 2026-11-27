@@ -1,7 +1,8 @@
-import {applyActionBatch} from './action-batch.ts';
+import {applyActionBatch, localActionTypes} from './action-batch.ts';
 import { parseState, STORAGE_KEY, type Action, type CoachState } from './coach-state.ts';
+import {processedMatchIds} from './result-only.ts';
 
-export type LocalJournal = { version: 1; id: string; account: string; teamSeasonId: string; revision: number; sourceToken: string; actions: Action[]; state: CoachState; attempted?: boolean };
+export type LocalJournal = { version: 1; id: string; account: string; teamSeasonId: string; revision: number; sourceToken: string; actions: Action[]; state: CoachState; attempted?: boolean; baseMatchId?: string };
 export const journalKey = (account: string, team: string) => `coachmate:local-journal:${account}:${team}`;
 function journalEnvelope(raw:string,account:string,team:string):LocalJournal {
   const journal = JSON.parse(raw) as LocalJournal;
@@ -25,6 +26,39 @@ export function archiveConfirmedJournal(storage:Pick<Storage,'getItem'|'setItem'
   if(!latest.committedBatches?.includes(draft.id))return false;
   const backup=`${key}:backup:${draft.id}:confirmed`;
   if(storage.getItem(backup)===null)storage.setItem(backup,raw);
+  if(storage.getItem(key)!==raw)throw new Error('Het concept is intussen gewijzigd. Laad het team opnieuw.');
+  storage.removeItem(key);
+  return true;
+}
+
+export function archiveProcessedMatchJournal(storage:Pick<Storage,'getItem'|'setItem'|'removeItem'>,account:string,team:string,latest:CoachState):boolean {
+  if(latest.catalog?.teamSeasonId!==team)throw new Error('De controle op verwerkte wedstrijden hoort bij een ander team.');
+  const key=journalKey(account,team),raw=storage.getItem(key);
+  if(raw===null)return false;
+  const draft=journalEnvelope(raw,account,team);
+  const snapshot=parseState(JSON.stringify(draft.state));
+  const finalMatchId=snapshot.catalog?.liveMatchId;
+  const processed=processedMatchIds(latest);
+  // Older concepts omit the starting match. If they switched matches, only an
+  // explicit prepare action can establish the scope of subsequent live actions.
+  const switchesMatch=draft.actions.some(action=>action?.type==='prepare-match');
+  let matchId=draft.baseMatchId ?? (switchesMatch?undefined:finalMatchId);
+  for(const action of draft.actions){
+    if(!action)return false;
+    if(action.type==='save-result'){
+      const result=latest.resultOnly?.[action.matchId];
+      if(!result||JSON.stringify(result)!==JSON.stringify(action.result))return false;
+      continue;
+    }
+    if(action.type==='prepare-match')matchId=action.matchId;
+    if(action.type==='edit-goal' && action.matchId!==matchId)return false;
+    if(!(localActionTypes.has(action.type)||action.type==='finish')||!matchId||!processed.has(matchId))return false;
+  }
+  if(switchesMatch&&matchId!==finalMatchId)return false;
+  const backup=`${key}:backup:${draft.id}:processed-match`;
+  const previous=storage.getItem(backup);
+  if(previous===null)storage.setItem(backup,raw);
+  else if(previous!==raw)throw new Error('Er is al een andere versie van dit concept gearchiveerd. Exporteer het herstelbestand.');
   if(storage.getItem(key)!==raw)throw new Error('Het concept is intussen gewijzigd. Laad het team opnieuw.');
   storage.removeItem(key);
   return true;
