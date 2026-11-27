@@ -20,6 +20,29 @@ export function roundDateValue(value:unknown):string{
   return date.getUTCFullYear()===year&&date.getUTCMonth()===month-1&&date.getUTCDate()===day?`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`:'';
 }
 
+const dutchMatchClock = new Intl.DateTimeFormat('en-GB', {
+  timeZone:'Europe/Amsterdam', year:'numeric', month:'2-digit', day:'2-digit',
+  hour:'2-digit', minute:'2-digit', hourCycle:'h23',
+});
+
+export function availabilitySchedule(matches:Match[],processed:ReadonlySet<string>,now:number) {
+  const parts=Object.fromEntries(dutchMatchClock.formatToParts(now).map(({type,value})=>[type,value]));
+  const currentMinute=`${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+  const upcoming:{match:Match;start:string}[]=[],past:{match:Match;start:string}[]=[];
+  for(const match of matches){
+    const date=roundDateValue(match.date.trim().replace(/^(\d{4}-\d{2}-\d{2})T.*$/,'$1').replaceAll('/','-'))||
+      roundDateValue(match.shortDate.trim().replaceAll('/','-'));
+    const time=/^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/.exec(match.time.trim());
+    const start=date?`${date} ${time?time[1].padStart(2,'0')+':'+time[2]:'24:00'}`:'';
+    const group=processed.has(match.id)||(start&&start<=currentMinute)?past:upcoming;
+    group.push({match,start});
+  }
+  return {
+    upcoming:upcoming.sort((a,b)=>(a.start||'9999').localeCompare(b.start||'9999')).map(row=>row.match),
+    past:past.sort((a,b)=>b.start.localeCompare(a.start)).map(row=>row.match),
+  };
+}
+
 // Refresh source rows without discarding local additions or silently resolving concurrent edits.
 export function mergeRoundRows(base:Match[],local:Match[],fresh:Match[]){
   const conflicts:string[]=[],rows:Match[]=[];
