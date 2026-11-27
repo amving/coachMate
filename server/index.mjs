@@ -15,6 +15,7 @@ import {sealSession,openSession} from './session.mjs';
 import { ParentStore, parentAppTransport } from './parent-store.mjs';
 import { parentAuth, authoritativeMailbox } from './parent-auth.mjs';
 import { parentEmailLogin } from './parent-email.mjs';
+import { SharedLive } from './shared-live.mjs';
 import { ParentPortal, parentEmail, projectParentAnswers, withoutParentProjection } from './parents.mjs';
 import {prepareRoundJob,queueInvitationBatch,workerReady,serviceDataToken} from './invitations.mjs';
 import {appStoreFromEnvironment} from './firestore-app-store.mjs';
@@ -65,6 +66,7 @@ const parentMail = parentPortal && parentEmailKey ? parentEmailLogin({
   apiKey:parentEmailKey, origin, apiOrigin, secret:parentSessionSecret, portal:parentPortal,
   identityBase:authEmulator ? 'http://' + authEmulator + '/identitytoolkit.googleapis.com' : 'https://identitytoolkit.googleapis.com',
 }) : null;
+const sharedLive=appStore&&parentPortal&&process.env.COACHMATE_SHARED_LIVE_ENABLED==='true'?new SharedLive(parentPortal):null;
 async function loadCoachTeam(snapshot, team, loaded = loadTeam(snapshot, team)) {
   if (!parentPortal?.enabled(team)) return loaded;
   const answers = await parentPortal.coachResponses(team);
@@ -142,7 +144,7 @@ const server = http.createServer(async (req, res) => {
       const active=parentLogin?.session(requestCookies);
       if(req.method==='GET'&&path==='/api/parent/session'){
         const coachAvailable=Boolean(appStore&&active?.uid.startsWith('google:')&&hasCoachAccess(await appStore.getCoachAccess(active.uid)));
-        return send(res,200,{parentEnabled,parentEmailEnabled:Boolean(parentMail),coachAvailable,authenticated:Boolean(active),role:active?.kind,email:active?.email,csrf:active?.csrf});
+        return send(res,200,{sharedLiveEnabled:Boolean(sharedLive),parentEnabled,parentEmailEnabled:Boolean(parentMail),coachAvailable,authenticated:Boolean(active),role:active?.kind,email:active?.email,csrf:active?.csrf});
       }
       if(!parentLogin)throw new HttpError(503,'Het ouderportaal is hier nog niet beschikbaar.');
       if(req.method==='GET'&&path==='/auth/parent/login')return await parentLogin.login(res);
@@ -178,6 +180,14 @@ const server = http.createServer(async (req, res) => {
         return send(res,200,await parentPortal.claim(active,input?.code));
       }
       if(req.method==='POST'&&path==='/api/parent/answer')return send(res,200,await parentPortal.answer(active,await body(req)));
+      if(sharedLive&&path==='/api/parent/live'&&req.method==='GET')return send(res,200,await sharedLive.parentRows(active));
+      if(sharedLive&&['/api/parent/live/sync','/api/parent/live/offer'].includes(path)&&req.method==='POST'){
+        const input=await body(req);
+        const row=await sharedLive.parentRow(active,input);
+        const result=path.endsWith('/sync')?await sharedLive.sync(row,active.uid,input,false):
+          await sharedLive.offer(row,active.uid,false,input.version);
+        return send(res,200,result);
+      }
       throw new HttpError(404,'Niet gevonden.');
     }
     const sid = requestCookies.coach_session;
@@ -193,7 +203,7 @@ const server = http.createServer(async (req, res) => {
     }
     const coachAccess=appStore&&active?.kind==='coach'?await appStore.getCoachAccess(active.uid):null;
     if(appStore&&!hasCoachAccess(coachAccess))active=null;
-    if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, parentEnabled, role:active?.kind, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf, dataSource:appStore?'firestore':'sheets' });
+    if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, sharedLiveEnabled:Boolean(sharedLive), parentEnabled, role:active?.kind, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf, dataSource:appStore?'firestore':'sheets' });
     if (req.method === 'GET' && url.pathname === '/auth/login') {
       if (!configured) throw new HttpError(503, 'Google-aanmelding is hier nog niet ingesteld.');
       if (attempts.size > 100) throw new HttpError(429, 'Probeer later opnieuw.');
@@ -231,6 +241,33 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && (req.headers.origin !== origin || req.headers['x-csrf-token'] !== active.csrf)) throw new HttpError(403, 'Ongeldig verzoek. Herlaad de pagina.');
     if (req.method === 'POST' && url.pathname === '/api/logout') { sessions.delete(sid); res.setHeader('Set-Cookie', cookie('coach_session', '', 0)); return send(res, 200, { ok: true }); }
     const store = activeStore(active.auth);
+    if (path.startsWith('/api/shared-live/')) {
+      const input=req.method==='POST'?await body(req):Object.fromEntries(url.searchParams);
+      if(!sharedLive||!parentPortal.enabled(input?.teamSeasonId))throw new HttpError(404,'Gedeelde Live is niet beschikbaar.');
+      requireCoachTeam(coachAccess,input.teamSeasonId);
+      const run=async()=>{
+        const snapshot=await store.read();
+        const raw=loadTeam(snapshot,input.teamSeasonId), loaded=await loadCoachTeam(snapshot,input.teamSeasonId,raw);
+        const row=await sharedLive.row(input.teamSeasonId,input.matchId);
+        if(req.method==='GET'&&path==='/api/shared-live/view'){
+          if(!loaded.state.catalog.matches.some(m=>m.id===input.matchId))throw new HttpError(404,'Wedstrijd niet gevonden.');
+          return {draft:row?sharedLive.view(row,active.uid,true):null,links:row?[]:(await parentPortal.list(input.teamSeasonId)).links};
+        }
+        if(req.method==='POST'&&path==='/api/shared-live/open')return sharedLive.open(loaded.state,input,active.uid);
+        if(req.method!=='POST'||!row||loaded.state.catalog.archived)throw new HttpError(404,'Gedeelde registratie niet gevonden.');
+        if(path==='/api/shared-live/sync')return sharedLive.sync(row,active.uid,input,true);
+        if(path==='/api/shared-live/offer')return sharedLive.offer(row,active.uid,true,input.version);
+        if(path==='/api/shared-live/preview')return sharedLive.preview(row,input,loaded.state);
+        if(path!=='/api/shared-live/approve')throw new HttpError(404,'Niet gevonden.');
+        if(row.data.status==='processed')return sharedLive.view(row,active.uid,true);
+        const approval=sharedLive.approval(row,input,loaded.state);
+        const next=withoutParentProjection(approval.state,raw.state,loaded.state);
+        await appStore.write(snapshot,stateTables(snapshot,input.teamSeasonId,next,loaded.revision+1),
+          sharedLive.store.writes([approval.change]));
+        return sharedLive.view(await sharedLive.row(input.teamSeasonId,input.matchId),active.uid,true);
+      };
+      return send(res,200,await (req.method==='POST'?serial(run):run()));
+    }
     if (url.pathname==='/api/parent-access' || url.pathname.startsWith('/api/parent-access/')) {
       if (!parentPortal) throw new HttpError(404, 'Het ouderportaal is niet actief.');
       if (req.method==='GET' && url.pathname==='/api/parent-access') {
@@ -303,6 +340,16 @@ const server = http.createServer(async (req, res) => {
       }
       if (url.pathname === '/api/action-batch' && loaded.state.committedBatches?.includes(input.batchId)) return publicState(loaded);
       if (loaded.revision !== input.revision || loaded.sourceToken !== input.sourceToken) throw new HttpError(409, 'Een andere coach of de bron heeft gegevens gewijzigd. Vernieuw de gegevens.');
+      if(sharedLive&&parentPortal.enabled(input.teamSeasonId)){
+        const requested=path==='/api/action-batch'?input.actions:path==='/api/action'?[input.action]:[];
+        if(Array.isArray(requested)){
+          const sensitive=requested.filter(a=>a&&['assistant-prepare','assistant-execute','prepare-match','save-result','save-stats','finish','goal','away-goal','edit-goal','undo-goal','swap','keeper','phase','set-period','toggle-clock','set-periods','set-field-size'].includes(a.type));
+          for(const match of new Set(sensitive.map(a=>a.type==='prepare-match'?loaded.state.catalog.liveMatchId:a.matchId??loaded.state.catalog.liveMatchId).filter(Boolean))){
+            const row=await sharedLive.row(input.teamSeasonId,match);
+            if(row&&row.data.status!=='processed')throw new HttpError(409,'Deze wedstrijd heeft gedeelde Live-invoer. Gebruik die registratie voor controle en verwerking.');
+          }
+        }
+      }
       if (url.pathname === '/api/club') {
         const migration = clubMigration(snapshot, input.teamSeasonId, input);
         await store.write(snapshot, migration.replacements);

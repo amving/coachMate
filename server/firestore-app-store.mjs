@@ -75,7 +75,7 @@ export class FirestoreAppStore {
     if(problem)throw new HttpError(422,problem);
     return this.write({manifest:{tables:{},tableHeaders}},complete);
   }
-  async write(snapshot,replacements){
+  async write(snapshot,replacements,additionalWrites=[]){
     const {root,request}=this.connection;
     const manifest=structuredClone(snapshot.manifest);
     const writes=[];
@@ -90,9 +90,10 @@ export class FirestoreAppStore {
       for(let index=parts.length;index<old.length;index++)writes.push({delete:root+'/coachmateApp/'+key(table,index)});
       manifest.tables[table]=hashes;
     }
-    if(snapshot.version&&!writes.length)return;
+    if(snapshot.version&&!writes.length&&!additionalWrites.length)return;
     writes.push({update:{name:root+'/'+head,fields:{manifest:{stringValue:JSON.stringify(manifest)}}},
       currentDocument:snapshot.version?{updateTime:snapshot.version}:{exists:false}});
+    writes.push(...additionalWrites);
     const commit={writes};
     if(writes.length>450||Buffer.byteLength(JSON.stringify(commit))>8_000_000){
       throw new HttpError(422,'Deze wijziging is te groot voor één veilige Firestore-opslag.');

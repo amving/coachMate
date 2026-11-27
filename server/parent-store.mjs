@@ -51,15 +51,17 @@ export class ParentStore {
     if (records.length > 5000) throw new HttpError(503, 'Het ouderportaal kan deze gegevens momenteel niet laden.');
     return records;
   }
-  async commit(changes) {
-    const writes = changes.map(change => {
+  writes(changes) {
+    return changes.map(change => {
       const name = this.name(change.collection, change.id);
       const currentDocument = change.version ? {updateTime: change.version} : {exists: false};
       return change.remove ? {delete: name, currentDocument} :
         {update: {name, fields: fields(change.data)}, currentDocument};
     });
+  }
+  async commit(changes) {
     try {
-      await this.auth.request({url: this.base + ':commit', method: 'POST', data: {writes}, retry: false});
+      await this.auth.request({url: this.base + ':commit', method: 'POST', data: {writes: this.writes(changes)}, retry: false});
     } catch (error) {
       if ([409, 412].includes(error.response?.status) ||
         ['ABORTED','FAILED_PRECONDITION','ALREADY_EXISTS','NOT_FOUND'].includes(error.response?.data?.error?.status)) {

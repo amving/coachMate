@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FirestoreAppStore,appStoreFromEnvironment} from '../server/firestore-app-store.mjs';
 import {HttpError} from '../server/sheets.mjs';
+import {ParentStore,parentAppTransport} from '../server/parent-store.mjs';
 import {seed,schema} from '../server/schema.mjs';
 
 function memory(){
@@ -46,4 +47,24 @@ test('opnieuw lezen van rollen gebruikt de stabiele identiteit en productie gebr
   assert.deepEqual(await store.getCoachAccess('google:both'),{admin:false,teams:[]});
   assert.equal(appStoreFromEnvironment({NODE_ENV:'production'}),null);
   assert.throws(()=>appStoreFromEnvironment({NODE_ENV:'production',COACHMATE_APP_STORE:'firestore'}),/lokale pilot/);
+});
+
+test('gedeelde Live en officiële wedstrijdcijfers worden samen opgeslagen',async()=>{
+  const store=memory();
+  const drafts=new ParentStore(parentAppTransport(store.connection),'demo-fixture');
+  await store.seed({Seasons:rows('Seasons',seed.Seasons),TeamSeasons:rows('TeamSeasons',seed.TeamSeasons)});
+  await drafts.commit([{collection:'Live',id:'wedstrijd',data:{status:'review'}}]);
+  const review=await drafts.get('Live','wedstrijd');
+  const snapshot=await store.read();
+  await drafts.commit([{collection:'Live',id:review.id,version:review.version,data:{status:'review',late:'goal'}}]);
+  const approve=version=>store.write(snapshot,{State:[{json:'officiële wedstrijd'}]},drafts.writes([
+    {collection:'Live',id:review.id,version,data:{status:'processed'}},
+  ]));
+  await assert.rejects(approve(review.version),{status:409});
+  assert.deepEqual((await store.read()).tables.State,[]);
+  const fresh=await drafts.get('Live','wedstrijd');
+  assert.equal(fresh.data.status,'review');
+  await approve(fresh.version);
+  assert.equal((await drafts.get('Live','wedstrijd')).data.status,'processed');
+  assert.deepEqual((await store.read()).tables.State,[{json:'officiële wedstrijd'}]);
 });
