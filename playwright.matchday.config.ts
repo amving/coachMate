@@ -5,7 +5,8 @@ export default defineConfig({
   testDir:'./tests',testMatch:[
     '**/matchday-regressions.spec.ts','**/match-preparation.spec.ts',
     '**/result-only.spec.ts','**/stats-tab-navigation.spec.ts',
-    '**/statistics-coverage.spec.ts','**/player-detail-refinement.spec.ts',
+    '**/statistics-coverage.spec.ts','**/player-detail-refinement.spec.ts','**/availability-schedule.spec.ts',
+    '**/parent-portal.spec.ts',
   ],timeout:60000,workers:2,
   use:{baseURL:externalOrigin??'http://127.0.0.1:4176',trace:'retain-on-failure'},
   projects:[

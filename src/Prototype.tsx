@@ -2,7 +2,7 @@ import {isProcessed,processedMatchIds,seasonGoalRows,resultPlayerGoals,parseScor
 import {matchStanding,outcomeLabels,registeredMatchResults} from './history-standings';
 import {invitationProgress,invitationMatches,type InvitationFilter} from './invitation-progress';
 import {newPreparationDraft,readPreparationDraft,keeperScheduleValid,startingLineupValid,startingLineupIssue,preparationPlanCurrent,calculatePreparation,preparationProblem,type PreparationDraft} from './preparation-flow';
-import {mergeRoundRows,sameRoundRows,roundDateValue,preparationComplete} from './availability-workflow';
+import {availabilitySchedule,mergeRoundRows,sameRoundRows,roundDateValue,preparationComplete} from './availability-workflow';
 import {arrangeFormation,formationCatalog,formationsForTeam,formationFitsTeam,formationRoles,positionsForFormation,suggestFormation,validateFormationCatalog,validateFormation,validateFormations,type Formation} from './formations';
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, } from "react";
 import {createPortal} from 'react-dom';
@@ -51,7 +51,7 @@ type FormJob={jobId:string;round:number;status:string;error?:string};
 type FormDelivery={deliveryId:string;batchId:string;formId:string;playerId:string;channel?:string;status:string;error?:string;sentAt?:string};
 type FormStatus = {formId:string; url:string; published:boolean|null; accepting:boolean|null; issues:string[]; matchCount:number; codeEntryId?:string; prefillDefaults?:string; statusQuestion?:string};
 const validParentEmail=(email:string|undefined)=>Boolean(email&&email.length<=254&&/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(email)&&!/[\r\n\\:]/.test(email));
-const Store = createContext<{ state: CoachState; rankSwaps?: (options:GeminiSwapOption[])=>Promise<GeminiSwapChoice|null>; sharedState: CoachState|null; refreshMatchStatus: () => void; hasPendingSave: boolean; awaitingSaveConfirmation: boolean; persistence: React.ReactNode; save: (actions: Action[]) => Promise<boolean>; send: (action: Action) => Promise<boolean>; notify: (message: string) => void; navigate: (tab: Tab, matchId?: string) => void; focusMatch: string | null; statsVisible: boolean; statsBack: { action: () => void } | null; setStatsBack: (back: { action: () => void } | null) => void; draftScope: string; settings: () => void; remote: boolean; busy: boolean; refreshForms: (round: number) => Promise<boolean>; formLinks: AvailabilityForm[]; invites: FormInvite[]; formJobs:FormJob[]; deliveries:FormDelivery[]; mailReady:boolean; refreshDistribution:()=>Promise<void>; reloadRoundData:()=>Promise<CoachState|null>; prepareRound:(round:number)=>Promise<boolean>; sendInvitations:(formId:string,playerIds:string[],batchId:string,message?:string,channel?:'email'|'whatsapp')=>Promise<boolean>; checkForm: (formId:string) => Promise<FormStatus>; saveFormLink: (formId:string,template:string)=>Promise<boolean>; createForm: (round: number) => void } | null>(null);
+const Store = createContext<{ state: CoachState; rankSwaps?: (options:GeminiSwapOption[])=>Promise<GeminiSwapChoice|null>; sharedState: CoachState|null; parentPortalEnabled:boolean; availabilitySources:Record<string,AvailabilitySource>; parentAnswers:Record<string,ParentAnswerMeta>; releaseParentOverride:(matchId:string,playerId:string)=>Promise<boolean>; refreshMatchStatus: () => void; hasPendingSave: boolean; awaitingSaveConfirmation: boolean; persistence: React.ReactNode; save: (actions: Action[]) => Promise<boolean>; send: (action: Action) => Promise<boolean>; notify: (message: string) => void; navigate: (tab: Tab, matchId?: string) => void; focusMatch: string | null; statsVisible: boolean; statsBack: { action: () => void } | null; setStatsBack: (back: { action: () => void } | null) => void; draftScope: string; settings: () => void; remote: boolean; busy: boolean; refreshForms: (round: number) => Promise<boolean>; formLinks: AvailabilityForm[]; invites: FormInvite[]; formJobs:FormJob[]; deliveries:FormDelivery[]; mailReady:boolean; refreshDistribution:()=>Promise<void>; reloadRoundData:()=>Promise<CoachState|null>; prepareRound:(round:number)=>Promise<boolean>; sendInvitations:(formId:string,playerIds:string[],batchId:string,message?:string,channel?:'email'|'whatsapp')=>Promise<boolean>; checkForm: (formId:string) => Promise<FormStatus>; saveFormLink: (formId:string,template:string)=>Promise<boolean>; createForm: (round: number) => void } | null>(null);
 function useCoach() { const context = useContext(Store); if (!context) throw new Error("CoachMate ontbreekt"); const catalog = context.state.catalog ?? demoCatalog(); return { ...context, ...catalog, LIVE_MATCH_ID: catalog.liveMatchId, name: (id: string | null) => catalog.players.find(p => p.id === id)?.shortName ?? "Speler" }; }
 function matchDate(match: Match) {
   const months = ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september", "oktober", "november", "december"];
@@ -95,7 +95,7 @@ function ResponseSummary({available,unavailable,pending,className=""}:{available
   return <dl className={`response-summary ${className}`}><div className="available avail"><dt>Aanwezig</dt><dd>{available}</dd></div><div className="unavailable"><dt>Afwezig</dt><dd>{unavailable}</dd></div><div className="pending"><dt>Onbekend</dt><dd>{pending}</dd></div></dl>;
 }
 function AttendanceEditor({match, flat=false,onContinue,preparing=false}:{match:Match; flat?:boolean;onContinue?:(statuses:Record<string,Availability>)=>void;preparing?:boolean}) {
-  const {state,send,busy,archived,players,draftScope,notify}=useCoach();
+  const {state,send,busy,archived,players,draftScope,notify,parentAnswers,releaseParentOverride}=useCoach();
   const key=`coachmate:attendance-draft:${draftScope}:${match.id}`;
   const [draft,setDraft]=useState<Record<string,Availability>>(()=>{try{const saved=JSON.parse(readDraft(key)??"{}");return Object.fromEntries(Object.entries(saved).filter(([id,v])=>players.some(p=>p.id===id)&&["available","unavailable","pending"].includes(v as string))) as Record<string,Availability>;}catch{return {};}});
   const [error,setError]=useState(""),[saving,setSaving]=useState(false),[editorOpen,setEditorOpen]=useState(false);
@@ -115,7 +115,11 @@ function AttendanceEditor({match, flat=false,onContinue,preparing=false}:{match:
     catch{setError("Opslaan niet bevestigd. Je wijzigingen blijven klaarstaan. Probeer opnieuw.");}
     finally{applying.current=false;setSaving(false);}
   };
-  const body=<><ResponseSummary available={statusCount("available")} unavailable={statusCount("unavailable")} pending={statusCount("pending")} />{!onContinue&&<p className="editor-instruction">Pas spelers aan en verwerk je wijzigingen in één keer.</p>}<div className="attendance-player-list">{players.map(p=><label className="attendance-player" key={p.id} data-status={value(p.id)}><span className="player-number">{p.number}</span><strong>{p.shortName}</strong><select aria-label={`Beschikbaarheid ${p.shortName}`} disabled={busy||saving||archived} value={value(p.id)} onChange={e=>{setError("");setDraft(current=>({...current,[p.id]:e.target.value as Availability}));}}><option value="available">Aanwezig</option><option value="unavailable">Afwezig</option><option value="pending">Onbekend</option></select></label>)}</div>{!onContinue&&<details className="editor-explanation"><summary>Over deze correcties <InfoCircledIcon /></summary><p>Je wijzigingen blijven lokaal tot je ze verwerkt. Coachcorrecties gaan voor formulierantwoorden. De spelersgroep bij Live wordt één keer bijgewerkt; gespeelde minuten blijven bewaard.</p></details>}<div className="editor-confirmation">{error&&<p className="editor-error" role="alert">{error}</p>}{(!onContinue||statusCount("pending")>0)&&<p className="editor-save-status" role="status">{onContinue?"Bevestig de onbekende spelers.":count?`${count} ${count===1?"wijziging":"wijzigingen"} nog niet verwerkt.`:"Geen wijzigingen om te verwerken."}</p>}<div className="attendance-save-actions">{count>0&&<button type="button" className="secondary-button" disabled={busy||saving} onClick={()=>{setDraft({});setError("");}}>Annuleren</button>}<button type="button" className="primary-button" disabled={(onContinue?(statusCount('pending')>0||statusCount('available')<(state.team.fieldSize??6)):!count)||busy||saving||preparing||archived} onClick={apply}>{onContinue?(preparing?"Berekenen…":"Bevestigen en verder"):saving?"Verwerken…":"Wijzigingen verwerken"}</button></div></div></>;
+  const parentEntries=players.flatMap(player=>{
+    const answer=parentAnswers[match.id+'/'+player.id];
+    return answer?[{player,answer}]:[];
+  });
+  const body=<><ResponseSummary available={statusCount("available")} unavailable={statusCount("unavailable")} pending={statusCount("pending")} />{!onContinue&&<p className="editor-instruction">Pas spelers aan en verwerk je wijzigingen in één keer.</p>}<div className="attendance-player-list">{players.map(p=><label className="attendance-player" key={p.id} data-status={value(p.id)}><span className="player-number">{p.number}</span><strong>{p.shortName}</strong><select aria-label={`Beschikbaarheid ${p.shortName}`} disabled={busy||saving||archived} value={value(p.id)} onChange={e=>{setError("");setDraft(current=>({...current,[p.id]:e.target.value as Availability}));}}><option value="available">Aanwezig</option><option value="unavailable">Afwezig</option><option value="pending">Onbekend</option></select></label>)}</div>{parentEntries.length>0&&<details className="parent-response-review"><summary>Antwoorden uit het ouderportaal ({parentEntries.length})</summary>{parentEntries.map(({player,answer})=><div className="parent-link-row" key={player.id}><span><strong>{player.shortName}</strong><small>{parentStatus[answer.status]}{answer.coachOverride?' · coachcorrectie actief':''}</small></span>{answer.coachOverride&&!onContinue&&<button type="button" className="text-button" disabled={busy||saving||archived||count>0||isProcessed(state,match.id)} onClick={async()=>{if(await releaseParentOverride(match.id,player.id))notify("Ouderantwoord is weer leidend.");else setError("Coachcorrectie vrijgeven lukt niet. Controleer of je concept eerst moet worden opgeslagen.");}}>Gebruik ouderantwoord</button>}</div>)}</details>}{!onContinue&&<details className="editor-explanation"><summary>Over deze correcties <InfoCircledIcon /></summary><p>Je wijzigingen blijven lokaal tot je ze verwerkt. Coachcorrecties gaan voor antwoorden uit het ouderportaal en Google Forms. De spelersgroep bij Live wordt één keer bijgewerkt; gespeelde minuten blijven bewaard.</p></details>}<div className="editor-confirmation">{error&&<p className="editor-error" role="alert">{error}</p>}{(!onContinue||statusCount("pending")>0)&&<p className="editor-save-status" role="status">{onContinue?"Bevestig de onbekende spelers.":count?`${count} ${count===1?"wijziging":"wijzigingen"} nog niet verwerkt.`:"Geen wijzigingen om te verwerken."}</p>}<div className="attendance-save-actions">{count>0&&<button type="button" className="secondary-button" disabled={busy||saving} onClick={()=>{setDraft({});setError("");}}>Annuleren</button>}<button type="button" className="primary-button" disabled={(onContinue?(statusCount('pending')>0||statusCount('available')<(state.team.fieldSize??6)):!count)||busy||saving||preparing||archived} onClick={apply}>{onContinue?(preparing?"Berekenen…":"Bevestigen en verder"):saving?"Verwerken…":"Wijzigingen verwerken"}</button></div></div></>;
   return flat?<section className="attendance-editor">{body}</section>:<><GroupLink className="attendance-trigger" title="Aanwezigheid aanpassen" subtitle={count?`${count} wijzigingen klaar om te verwerken`:`${counts(state,match.id).available} aanwezig · ${counts(state,match.id).pending} onbekend`} icon={<PersonIcon />} buttonRef={editorTrigger} onClick={()=>setEditorOpen(true)} /><BottomSheet open={editorOpen} onOpenChange={setEditorOpen} title="Aanwezigheid aanpassen" description={`${match.opponent} · ${match.shortDate} · ${match.time} · ${match.venue}`} snap={0.86}><section className="attendance-editor">{body}</section></BottomSheet></>;
 }
 type StartPlanDraft = PreparationDraft;
@@ -452,6 +456,223 @@ function LiveScreen() {
     <BottomSheet open={shareOpen&&processed} onOpenChange={setShareOpen} title="Wedstrijd verwerkt" description="Deel de eindstand en doelpunten via WhatsApp."><div className="match-share-content"><pre>{shareText}</pre><a className="primary-button" href={`https://wa.me/?text=${encodeURIComponent(shareText)}`} target="_blank" rel="noreferrer">Open in WhatsApp</a><p className="summary-note">Kies in WhatsApp de ontvanger en verstuur het bericht zelf.</p></div></BottomSheet>
     <BottomSheet open={finishOpen} onOpenChange={setFinishOpen} title="Wedstrijd afsluiten?" description={`${homeName} · ${awayName} · ${match.shortDate}`} snap={0.85}><div className="finish-summary"><div className="finish-score"><strong>{score.join("–")}</strong><span>{goalsOnlyMatch(state,match.id)?"Speelronde 1 · 50 wedstrijdminuten":`${clock(live.elapsedMs)} gespeeld · ${previewRows.filter(r => r.present).length} aanwezig`}</span></div><div className={`finish-table ${goalsOnlyMatch(state,match.id)?"is-goals-only":""}`}><div className="finish-table-head"><span>Speler</span>{!goalsOnlyMatch(state,match.id)&&<><span>Min.</span><span>Keeper</span></>}<span>Goals</span></div>{previewRows.map(r => <div key={r.playerId}><strong>{name(r.playerId)}</strong>{!goalsOnlyMatch(state,match.id)&&<><span>{r.present ? r.minutes : "Afw."}</span><span>{r.keeperMinutes}</span></>}<span>{r.goals}</span></div>)}</div><p className="summary-note">Eigen doelpunten tegenstander: {live.goals.filter(g => g.ownGoal).length}. {live.goals.some(g=>!g.ownGoal&&g.playerId===null)&&`${live.goals.filter(g=>!g.ownGoal&&g.playerId===null).length} doelpunt(en) zonder bekende maker tellen alleen mee in de teamscore. `} {goalsOnlyMatch(state,match.id)?"Alleen spelersdoelpunten en 50 wedstrijdminuten tellen mee. De overige cijfers tellen vanaf speelronde 2.":"Minuten worden afgerond op hele minuten."}</p>{finishError&&<p className="editor-error" role="alert">{finishError}</p>}<button type="button" className="primary-button" disabled={busy} onClick={finish}>{busy ? "Verwerken…" : "Afsluiten en verwerken"}</button></div></BottomSheet>
   </main>;
+}
+
+type SharedAction = Extract<Action,{type:'goal'|'away-goal'|'swap'|'keeper'|'toggle-clock'|'set-period'|'phase'}>;
+type SharedEvent = SharedAction & {id:string;now:number;by?:string};
+type SharedDraft = {
+  teamSeasonId:string;matchId:string;opponent:string;actor:string;clock:boolean;
+  status:'open'|'review'|'processed';version:string;live:CoachState['live'];
+  players:Pick<Player,'id'|'name'|'shortName'|'number'>[];
+  events:SharedEvent[];errors:string[];duplicates:string[];submitted:string[];excluded?:string[];
+  helpers?:{id:string;label:string;devices:{device:string;syncedAt:number}[]}[];
+};
+type SharedLink = {id:string;email:string;playerId:string};
+const sharedQuery=(teamSeasonId:string,matchId:string)=>new URLSearchParams({teamSeasonId,matchId});
+const sharedStatuses={open:'Open voor invoer',review:'Te controleren',processed:'Verwerkt'};
+
+function SharedMatchBoard({initial,request,coach,onProcessed,refresh}:{initial:SharedDraft;request:ParentRequest;coach:boolean;onProcessed?:()=>void;refresh:()=>Promise<SharedDraft|undefined>}){
+  const keyboard=useKeyboard();
+  const [draft,setDraft]=useState(initial);
+  const scope='coachmate:live-shared:'+JSON.stringify([initial.actor,initial.teamSeasonId,initial.matchId]);
+  const [device]=useState(()=>{try{
+    const key=scope+':device', id=localStorage.getItem(key)??crypto.randomUUID();
+    localStorage.setItem(key,id);return id;
+  }catch{return crypto.randomUUID();}});
+  const queueKey=scope+':'+device;
+  const readQueue=():SharedEvent[]=>JSON.parse(localStorage.getItem(queueKey)??'[]');
+  const [queue,setQueue]=useState<SharedEvent[]>(()=>{try{return readQueue();}catch{return [];}});
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+  const active=useRef(false);
+  const [kind,setKind]=useState<SharedAction['type']>('goal');
+  const [first,setFirst]=useState('');
+  const [second,setSecond]=useState('');
+  const [decisions,setDecisions]=useState<Record<string,boolean>>({});
+  const [checkedDuplicates,setCheckedDuplicates]=useState(false);
+  const [preview,setPreview]=useState<{key:string;score:[number,number];milliseconds:number;rows:{playerId:string;minutes:number;keeperMinutes:number;goals:number}[]} | null>(null);
+  const [time,setTime]=useState(Date.now);
+  const prefix=coach?'/api/shared-live/':'/api/parent/live/';
+  const latestRefresh=useRef(refresh);
+  latestRefresh.current=refresh;
+  const receivedProcessed=useRef(false);
+  useEffect(()=>{
+    if(draft.status==='processed'&&!receivedProcessed.current){
+      receivedProcessed.current=true;
+      onProcessed?.();
+    }
+  },[draft.status,onProcessed]);
+  const params={teamSeasonId:draft.teamSeasonId,matchId:draft.matchId};
+  const mustChooseLate=draft.status==='review'&&draft.events.some(e=>!draft.submitted.includes(e.id)&&decisions[e.id]===undefined);
+  const excluded=draft.excluded??draft.events.filter(e=>decisions[e.id]===false||!draft.submitted.includes(e.id)&&decisions[e.id]!==true).map(e=>e.id);
+  const reviewKey=JSON.stringify([draft.version,excluded,checkedDuplicates]);
+  const confirmedPreview=preview?.key===reviewKey?preview:null;
+  async function perform(operation:()=>Promise<void>){
+    if(active.current)return;
+    active.current=true;setBusy(true);setErr('');
+    try{await operation();}catch(error){setErr((error as Error).message);}
+    finally{active.current=false;setBusy(false);}
+  }
+  async function synchronize(){
+    if(!navigator.onLine||active.current||draft.status==='processed')return;
+    await perform(async()=>{
+      const events=readQueue();
+      if(!events.length&&draft.status!=='open')return;
+      const next:SharedDraft=await request(prefix+'sync',{...params,device,events:events.slice(0,100)});
+      const recorded=new Set(next.events.map(event=>event.id));
+      const remaining=readQueue().filter(event=>!recorded.has(event.id));
+      localStorage.setItem(queueKey,JSON.stringify(remaining));
+      setQueue(remaining);setDraft(next);
+    });
+  }
+  useEffect(()=>{
+    const online=()=>void synchronize();
+    window.addEventListener('online',online);
+    return ()=>window.removeEventListener('online',online);
+  });
+  useEffect(()=>{void synchronize();},[]);
+  useEffect(()=>{
+    const changed=(event:StorageEvent)=>{if(event.key===queueKey){try{setQueue(readQueue());}catch{}}};
+    window.addEventListener('storage',changed);
+    return ()=>window.removeEventListener('storage',changed);
+  },[queueKey]);
+  useEffect(()=>{
+    if(draft.status!=='open'||draft.live.runningSince===null)return;
+    const timer=window.setInterval(()=>setTime(Date.now()),1000);
+    return ()=>clearInterval(timer);
+  },[draft.status,draft.live.runningSince]);
+  useEffect(()=>{
+    const timer=window.setInterval(()=>{
+      if(!navigator.onLine||active.current||draft.status==='processed')return;
+      if(queue.length&&['open','review'].includes(draft.status)){void synchronize();return;}
+      void latestRefresh.current().then(next=>{if(next&&!active.current)setDraft(next);}).catch(()=>{});
+    },6000);
+    return ()=>clearInterval(timer);
+  },[draft.status,queue.length]);
+  function stage(action:SharedAction){
+    if(draft.status!=='open')return;
+    keyboard.hide();
+    try{
+      const next=[...readQueue(),{...action,now:Date.now(),id:crypto.randomUUID()}];
+      localStorage.setItem(queueKey,JSON.stringify(next));setQueue(next);setErr('');
+      void synchronize();
+    }catch{setErr('De actie kon niet lokaal worden bewaard. Probeer opnieuw.');}
+  }
+  async function transition(action:'offer'|'approve'){
+    keyboard.hide();
+    await perform(async()=>{
+      if(readQueue().length)throw Error('Synchroniseer eerst de lokale acties.');
+      const next=await request(prefix+action,{...params,version:draft.version,excluded,checkedDuplicates});
+      setDraft(next);
+    });
+  }
+  async function requestPreview(){
+    keyboard.hide();
+    await perform(async()=>{
+      const value=await request(prefix+'preview',{...params,version:draft.version,excluded,checkedDuplicates});
+      setPreview({...value,key:reviewKey});
+    });
+  }
+  const name=(id:string|null|undefined)=>draft.players.find(p=>p.id===id)?.name??'Onbekend';
+  const title=(event:SharedEvent)=>{
+    switch(event.type){
+      case 'goal':return event.ownGoal?'Eigen goal tegenstander':'Goal · '+name(event.playerId);
+      case 'away-goal':return event.ownGoalPlayerId?'Eigen goal · '+name(event.ownGoalPlayerId):'Tegengoal';
+      case 'swap':return 'Wissel · '+name(event.out)+' → '+name(event.in);
+      case 'keeper':return 'Keeper · '+name(event.playerId);
+      case 'phase':return 'Rust of hervatting';
+      case 'set-period':return 'Periode '+event.period;
+      default:return 'Klok gestart of gestopt';
+    }
+  };
+  const options=(ids?:string[])=>draft.players.filter(p=>!ids||ids.includes(p.id)).map(p=><option key={p.id} value={p.id}>{p.name}</option>);
+  const firstLabel=kind==='swap'?'Eruit':kind==='keeper'?'Keeper':kind==='away-goal'?'Eigen doelpunt door':'Doelpuntenmaker';
+  const open=draft.status==='open', reviewing=coach&&draft.status==='review';
+  const queuedClock=queue.filter(event=>event.type==='toggle-clock'&&!draft.events.some(saved=>saved.id===event.id)).length%2===1;
+  const clockRunning=(draft.live.runningSince!==null)!==queuedClock;
+  return <section className="parent-card shared-live-board" aria-label={'Gedeelde Live '+draft.opponent}>
+    <h2>{draft.opponent}</h2>
+    <p role="status">{sharedStatuses[draft.status]} · {draft.live.goals.length}–{draft.live.awayGoals.length}{queue.length?(' · '+queue.length+' lokaal bewaard'):''}</p>
+    <p>Periode {draft.live.period}/{draft.live.periods} · {Math.floor((draft.live.elapsedMs+Math.max(0,draft.live.runningSince===null||!open?0:time-draft.live.runningSince))/60000)} min · {draft.live.runningSince!==null?'Klok loopt':draft.live.phase==='Rust'?'Rust':'Klok staat stil'}</p>
+    {draft.clock&&open&&<div className="shared-live-actions">
+      {draft.live.phase!=='Rust'&&<button className="secondary-button" disabled={busy} onClick={()=>stage({type:'toggle-clock',now:0})}>{clockRunning?'Stop klok':'Start klok'}</button>}
+      {draft.live.period<draft.live.periods&&<button className="secondary-button" disabled={busy} onClick={()=>stage({type:'phase',now:0})}>{draft.live.phase==='Rust'?'Hervat':'Rust'}</button>}
+    </div>}
+    {open&&<form className="shared-live-board" onSubmit={event=>{
+      event.preventDefault();
+      if(kind==='goal')stage({type:'goal',playerId:first&&first!=='own'?first:null,ownGoal:first==='own',unknownScorer:!first,now:0});
+      if(kind==='away-goal')stage({type:'away-goal',delta:1,ownGoalPlayerId:first||undefined,now:0});
+      if(kind==='swap'&&first&&second)stage({type:'swap',out:first,in:second,now:0});
+      if(kind==='keeper'&&first)stage({type:'keeper',playerId:first,now:0});
+    }}>
+      <label className="form-label">Live-actie<select aria-label="Live-actie" value={kind} onChange={event=>{setKind(event.target.value as SharedAction['type']);setFirst('');setSecond('');}}>
+        <option value="goal">Goal</option><option value="away-goal">Tegengoal</option><option value="swap">Wissel</option><option value="keeper">Keeper</option>
+      </select></label>
+      <label className="form-label">{firstLabel}
+        <select aria-label={firstLabel} value={first} onChange={event=>setFirst(event.target.value)}>
+          <option value="">{kind==='away-goal'?'Tegengoal':kind==='goal'?'Onbekend':'Kies speler'}</option>
+          {kind==='goal'&&<option value="own">Eigen goal tegenstander</option>}{options(draft.live.field)}
+        </select>
+      </label>
+      {kind==='swap'&&<label className="form-label">Erin<select aria-label="Erin" value={second} onChange={event=>setSecond(event.target.value)}><option value="">Kies speler</option>{options(draft.players.map(p=>p.id).filter(id=>!draft.live.field.includes(id)))}</select></label>}
+      <button className="primary-button" disabled={busy||(kind==='swap'||kind==='keeper')&&!first||kind==='swap'&&!second}>Live-actie vastleggen</button>
+    </form>}
+    {draft.helpers&&draft.status!=='processed'&&<details><summary>Synchronisatie per ouder</summary><ul>{draft.helpers.map(helper=><li key={helper.id}>{helper.label}{helper.devices.length?' · '+helper.devices.length+' toestel(len), laatst '+new Date(Math.max(...helper.devices.map(d=>d.syncedAt))).toLocaleTimeString('nl-NL'):' · nog geen bevestiging'}</li>)}</ul><p>Een ontbrekende bevestiging geeft geen zekerheid over invoer op een offline toestel.</p></details>}
+    {!!(draft.events.length||queue.length)&&<ul className="shared-live-events">{[...draft.events,...queue.filter(e=>!draft.events.some(r=>r.id===e.id))].map(event=>{
+      const late=!open&&!draft.submitted.includes(event.id)&&Boolean(event.by);
+      return <li key={event.id}><strong>{title(event)}</strong><small>{new Date(event.now).toLocaleTimeString('nl-NL')} · {event.by??'Lokaal bewaard'}
+        {late?' · nagekomen':''}{draft.excluded?.includes(event.id)?' · uitgesloten':''}{draft.duplicates.includes(event.id)?' · mogelijk dubbel':''}{draft.errors.includes(event.id)?' · controle nodig':''}</small>
+        {reviewing&&event.by&&<label>{late?'Nagekomen actie meenemen':'Meenemen'}
+          <select aria-label={'Beslissing '+title(event)+' '+event.now} value={decisions[event.id]===undefined?(late?'':'yes'):decisions[event.id]?'yes':'no'}
+            onChange={e=>{const value=e.target.value;setCheckedDuplicates(false);setDecisions(prev=>({...prev,[event.id]:value==='yes'}));}}>
+            {late&&<option value="" disabled>Kies</option>}<option value="yes">Ja</option><option value="no">Nee</option>
+          </select>
+        </label>}
+      </li>;
+    })}</ul>}
+    {reviewing&&draft.duplicates.length>0&&<label><input type="checkbox" checked={checkedDuplicates} onChange={e=>setCheckedDuplicates(e.target.checked)}/> Mogelijke dubbelen gecontroleerd</label>}
+    {confirmedPreview&&reviewing&&<section aria-label="Te verwerken cijfers">
+      <h3>Te verwerken cijfers</h3><p>Eindstand {confirmedPreview.score.join('–')} · {Math.round(confirmedPreview.milliseconds/60000)} teamminuten</p>
+      <ul>{confirmedPreview.rows.map(row=><li key={row.playerId}>{name(row.playerId)} · {row.minutes} min · {row.keeperMinutes} keepermin · {row.goals} goal(s)</li>)}</ul>
+    </section>}
+    {draft.status==='processed'&&!!queue.length&&<button className="secondary-button" onClick={()=>downloadBackup(JSON.stringify(queue,null,2))}>Lokale acties exporteren</button>}
+    {err&&<p role="alert">{err}</p>}
+    {draft.status!=='processed'&&<div className="shared-live-actions">
+      <button className="secondary-button" disabled={busy} onClick={()=>void (queue.length||open?synchronize():perform(async()=>{const next=await refresh();if(next)setDraft(next);}))}>{queue.length?'Synchroniseren':'Vernieuwen'}</button>
+      {open&&<button className="primary-button" disabled={busy||!!queue.length||!draft.events.length} onClick={()=>void transition('offer')}>Aanbieden ter controle</button>}
+      {reviewing&&!confirmedPreview&&<button className="secondary-button" disabled={busy||!!queue.length||mustChooseLate||draft.duplicates.length>0&&!checkedDuplicates} onClick={()=>void requestPreview()}>Bekijk te verwerken cijfers</button>}
+      {confirmedPreview&&reviewing&&<button className="primary-button" disabled={busy||!!queue.length}
+        onClick={()=>void transition('approve')}>Wedstrijd verwerken</button>}
+    </div>}
+  </section>;
+}
+
+function SharedCoachLive({match,journal,onProcessed,request,team,players,children}:{match:Match;journal:boolean;onProcessed:()=>void;request:ParentRequest;team:string;players:Player[];children:React.ReactNode}){
+  const keyboard=useKeyboard();
+  const [data,setData]=useState<{links:SharedLink[];draft:SharedDraft|null}|null>(null);
+  const [links,setLinks]=useState<string[]>([]);
+  const [error,setError]=useState('');
+  const [busy,setBusy]=useState(false);
+  const endpoint='/api/shared-live/view?'+sharedQuery(team,match.id);
+  const load=async()=>request(endpoint);
+  useEffect(()=>{let current=true;load().then(value=>{if(current)setData(value);}).catch(e=>{if(current)setError(e.message);});return()=>{current=false;};},[team,match.id]);
+  if(data?.draft)return <SharedMatchBoard key={data.draft.matchId} initial={data.draft} request={request} coach refresh={async()=>(await load()).draft} onProcessed={onProcessed}/>;
+  if(!data)return <>{error?<p role="alert">{error}</p>:<p role="status">Gedeelde Live wordt geladen…</p>}{children}</>;
+  return <><details className="parent-card">
+    <summary>Ouders aanwijzen voor Live</summary>
+    {journal?<p>Sla het gewone Live-concept eerst tussentijds op voordat je ouders aanwijst.</p>:<>
+      <p>Gekoppelde ouders kunnen deze wedstrijd registreren. De coach bedient de wedstrijdklok.</p>
+      {!data.links.length&&<p>Voor dit team zijn nog geen ouders gekoppeld.</p>}
+      {data.links.map(link=><label key={link.id}><input type="checkbox" checked={links.includes(link.id)} onChange={e=>setLinks(prev=>e.target.checked?[...prev,link.id]:prev.filter(id=>id!==link.id))}/> {link.email} · {players.find(p=>p.id===link.playerId)?.name}</label>)}
+      <button type="button" className="primary-button" disabled={busy||!links.length} onClick={async()=>{
+        keyboard.hide();setBusy(true);setError('');
+        try{const draft=await request('/api/shared-live/open',{teamSeasonId:team,matchId:match.id,links});setData({draft,links:[]});}
+        catch(e){setError((e as Error).message);}
+        finally{setBusy(false);}
+      }}>Gedeelde Live openen</button>
+    </>}
+    {error&&<p role="alert">{error}</p>}
+  </details>{children}</>;
 }
 function GoalReceipt({children}:{children:React.ReactNode}){
   const {screenRef}=useScreenPortal(),{bottomInset}=useKeyboardInsets();
@@ -892,8 +1113,16 @@ function RoundPreparation({draft,onChange,onRequested,onDone,onDiscard,onSetting
 }
 
 function AvailabilityScreen({managementOnly=false}:{managementOnly?:boolean}) {
-  const {state,players,matches,seasonName,remote,prepareRound,formLinks,busy,archived,focusMatch,draftScope,navigate,invites,deliveries,refreshForms,refreshDistribution,reloadRoundData,checkForm,settings}=useCoach();
+  const {state,sharedState,players,matches,seasonName,remote,prepareRound,formLinks,busy,archived,focusMatch,draftScope,navigate,invites,deliveries,refreshForms,refreshDistribution,reloadRoundData,checkForm,settings,parentPortalEnabled,availabilitySources,parentAnswers}=useCoach();
   const keyboard=useKeyboard();
+  const [scheduleTime,setScheduleTime]=useState(Date.now);
+  useEffect(()=>{
+    if(managementOnly)return;
+    const update=()=>{if(document.visibilityState==='visible')setScheduleTime(Date.now());};
+    const timer=window.setInterval(update,30_000);
+    document.addEventListener('visibilitychange',update);
+    return ()=>{window.clearInterval(timer);document.removeEventListener('visibilitychange',update);};
+  },[managementOnly]);
   const [roundHistoryOpen,setRoundHistoryOpen]=useState(false),[browsing,setBrowsing]=useState(false);
   const [detail,setDetail]=useState<string|null>(focusMatch),[editingResponse,setEditingResponse]=useState(false);
   useEffect(()=>setEditingResponse(false),[detail]);
@@ -950,43 +1179,64 @@ function AvailabilityScreen({managementOnly=false}:{managementOnly?:boolean}) {
 
 
   const selected=matches.find(m=>m.id===detail),values=historyRound===null?state.availability:state.rounds[historyRound]??state.availability;
-  const historical=archived||browsing||Boolean(selected&&isProcessed(state,selected.id));
+  const processed=processedMatchIds(sharedState??state);
+  const historical=archived||browsing||Boolean(selected&&processed.has(selected.id));
   const roundForm=formLinks.find(f=>!f.matchId&&Number(f.round)===selectedRound);
   const roundMatches=matches.filter(m=>m.availabilityRound===selectedRound);
   useEffect(()=>{
     let active=true;setFormProblem('');
     if(!remote||managementOnly)return;
-    if(!roundForm){setFormProblem('Voor deze speelronde is nog geen formulier gemaakt.');return;}
+    if(!roundForm){if(!parentPortalEnabled)setFormProblem('Voor deze speelronde is nog geen formulier gemaakt.');return;}
     void checkForm(roundForm.formId).then(result=>{if(!active)return;const ready=result.published===true&&result.accepting===true&&!result.issues.length&&Boolean(roundForm.prefillDefaults??result.prefillDefaults);if(!ready)setFormProblem(result.issues[0]??'Het formulier is nog niet geopend voor antwoorden of de persoonlijke links zijn nog niet ingesteld.');}).catch(()=>{if(active)setFormProblem('De formulierstatus kon niet worden gecontroleerd. Controleer de Google-verbinding.');});
     return()=>{active=false;};
-  },[roundForm?.formId,roundForm?.prefillDefaults,remote,managementOnly]);
+  },[roundForm?.formId,roundForm?.prefillDefaults,remote,managementOnly,parentPortalEnabled]);
 
-  const today=new Date().setHours(0,0,0,0);
-  const isPast=(m:Match)=>isProcessed(state,m.id)||matchDate(m)<today;
-  const shown=orderedMatches(roundMatches.filter(m=>!isPast(m)));
-  const past=orderedMatches(roundMatches.filter(isPast));
+  const {upcoming,past}=availabilitySchedule(matches,processed,scheduleTime);
   const roundForms=formLinks.filter(f=>Number(f.round)===selectedRound);
   const received=new Set(invites.filter(i=>roundForms.some(f=>f.formId===i.formId)&&i.submittedAt&&players.some(p=>p.id===i.playerId)).map(i=>i.playerId)).size;
   const latestDeliveries=new Map<string,FormDelivery>();
   for(const row of deliveries)if(roundForms.some(f=>f.formId===row.formId)&&players.some(p=>p.id===row.playerId))latestDeliveries.set(row.playerId,row);
   const deliveryCount=(statuses:string[])=>[...latestDeliveries.values()].filter(row=>statuses.includes(row.status)).length;
   const lastImport=readDraft(`coachmate:last-import:${draftScope}:${selectedRound}`);
-  async function updateResponses(){setImportMessage('');try{const ok=await refreshForms(selectedRound);if(ok){setDistributionKnown(true);setDistributionError('');}setImportMessage(ok?'Reacties bijgewerkt. Coachcorrecties blijven behouden.':'Bijwerken niet gelukt. Je bestaande reacties zijn behouden.');}catch{setImportMessage('Geen verbinding. Je bestaande reacties zijn behouden.');}}
-  function matchItem(m:Match,closed=false){const count=counts(state,m.id);return <article className="availability-match compact-availability-match" key={m.id}><button type="button" className="availability-match-button" aria-label={`Bekijk reacties ${m.opponent}`} onClick={event=>{detailTrigger.current=event.currentTarget;setHistoryRound(null);setDetail(m.id);}}><DateTile match={m}/><span className="availability-match-copy"><strong>{m.opponent}</strong><small>{m.time} · {m.venue}{closed?(isProcessed(state,m.id)?' · Afgesloten':' · Nog niet verwerkt'):''}</small><span className="availability-inline-counts"><span>{count.available} aanwezig</span><span>{count.unavailable} afwezig</span><span>{count.pending} onbekend</span></span></span><ChevronRightIcon/></button></article>;}
+  async function updateResponses(){
+    setImportMessage('');
+    try{
+      const portalUpdated=parentPortalEnabled&&Boolean(await reloadRoundData());
+      const hasForms=!parentPortalEnabled||roundForms.length>0;
+      const formsUpdated=hasForms&&await refreshForms(selectedRound);
+      if(portalUpdated&&hasForms&&!formsUpdated){
+        setImportMessage('Ouderreacties bijgewerkt. Google Forms kon niet worden opgehaald.');return;
+      }
+      const updated=portalUpdated||formsUpdated;
+      if(updated){setDistributionKnown(true);setDistributionError('');}
+      setImportMessage(updated?'Reacties bijgewerkt. Coachcorrecties blijven behouden.':'Bijwerken niet gelukt. Je bestaande reacties zijn behouden.');
+    }catch{setImportMessage('Geen verbinding. Je bestaande reacties zijn behouden.');}
+  }
+  function matchItem(m:Match,closed=false){const count=counts(state,m.id);return <article className="availability-match compact-availability-match" key={m.id}><button type="button" className="availability-match-button" aria-label={`Bekijk reacties ${m.opponent}`} onClick={event=>{detailTrigger.current=event.currentTarget;setHistoryRound(null);setDetail(m.id);}}><DateTile match={m}/><span className="availability-match-copy"><strong>{m.opponent}</strong><small>{m.time} · {m.venue}{closed?(processed.has(m.id)?' · Afgesloten':' · Nog niet verwerkt'):''}</small><span className="availability-inline-counts"><span>{count.available} aanwezig</span><span>{count.unavailable} afwezig</span><span>{count.pending} onbekend</span></span></span><ChevronRightIcon/></button></article>;}
   const selectedValues:Record<string,Availability>=selected?(values[selected.id]??state.availability[selected.id]??{}):{};
-  const provenance=(state as CoachState & {formUpdates?:Record<string,{manual?:boolean;time?:string}>}).formUpdates??{};
+  const parentResponded=players.filter(player=>roundMatches.some(match=>{
+    const answer=parentAnswers[match.id+'/'+player.id];return answer&&answer.status!=='pending';
+  })).length;
   const selectedCounts={available:Object.values(selectedValues).filter(v=>v==="available").length,unavailable:Object.values(selectedValues).filter(v=>v==="unavailable").length,pending:Object.values(selectedValues).filter(v=>v==="pending").length};
   const Layout=managementOnly?"div":"main";
   return <Layout className={managementOnly?"round-settings-content":"screen-content availability-screen"}>
     {!managementOnly&&<>
+    <section className="availability-list availability-schedule" aria-label="Reacties per wedstrijd">
+      <div className="section-heading"><h2>Aankomende wedstrijden</h2></div>
+      {upcoming.length?upcoming.map(match=>matchItem(match)):<p className="summary-note">Geen aankomende wedstrijden.</p>}
+      {past.length>0&&<details className="availability-past">
+        <summary><span>Afgelopen wedstrijden</span><span>{past.length}<ChevronDownIcon aria-hidden="true"/></span></summary>
+        <div>{past.map(match=>matchItem(match,true))}</div>
+      </details>}
+    </section>
     <section className="round-response-summary quiet-round-summary" aria-label="Reacties speelronde">
       <div className="active-round-heading active-round-context"><span className="eyebrow">Lopende speelronde</span><div className="round-title-row"><h2>Speelronde {activeRound}</h2><button type="button" className="round-refresh" aria-label="Reacties bijwerken" title="Reacties bijwerken" disabled={archived||busy||!roundMatches.length} onClick={()=>remote?void updateResponses():setImportMessage('Lokale demo: er worden geen Google-reacties opgehaald.')}><ReloadIcon/></button></div>{roundMatches.length>0&&<p>{orderedMatches(roundMatches)[0].shortDate} – {orderedMatches(roundMatches).at(-1)?.shortDate} · {roundMatches.length} wedstrijden</p>}</div>
-      {remote?<><p className="response-total"><strong>{distributionKnown?`${received} van ${players.length}`:'…'}</strong><span>gereageerd</span></p>{distributionKnown&&deliveryCount(['failed','uncertain'])>0&&<button type="button" className="text-button request-attention" onClick={()=>setInviteOpen(true)}>{deliveryCount(['failed','uncertain'])} uitnodigingen controleren<ChevronRightIcon/></button>}</>:<p className="response-total"><strong>{players.length} spelers</strong><span>Lokale voorbeeldgegevens</span></p>}
+      {remote?<><p className="response-total"><strong>{distributionKnown?`${received} van ${players.length}`:'…'}</strong><span>{parentPortalEnabled?'via Google Forms':'gereageerd'}</span></p>{parentPortalEnabled&&<p className="response-total"><strong>{parentResponded} van {players.length}</strong><span>via ouderportaal</span></p>}{distributionKnown&&deliveryCount(['failed','uncertain'])>0&&<button type="button" className="text-button request-attention" onClick={()=>setInviteOpen(true)}>{deliveryCount(['failed','uncertain'])} uitnodigingen controleren<ChevronRightIcon/></button>}</>:<p className="response-total"><strong>{players.length} spelers</strong><span>Lokale voorbeeldgegevens</span></p>}
       {lastImport&&<p className="import-timestamp">Bijgewerkt: {new Date(lastImport).toLocaleString('nl-NL',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</p>}
-      <button type="button" className="primary-button" disabled={busy||!roundMatches.length} onClick={()=>remote&&!roundForm?void openPreparation(activeRound):setInviteOpen(true)}>Uitnodigingen bekijken<ChevronRightIcon/></button>
+      {(!parentPortalEnabled||roundForm)&&<button type="button" className="primary-button" disabled={busy||!roundMatches.length} onClick={()=>remote&&!roundForm?void openPreparation(activeRound):setInviteOpen(true)}>{parentPortalEnabled?'Forms-uitnodigingen bekijken':'Uitnodigingen bekijken'}<ChevronRightIcon/></button>}
+      {parentPortalEnabled&&<button type="button" className="text-button" onClick={settings}>Oudertoegang beheren<ChevronRightIcon/></button>}
       {remote&&formProblem&&<p role="status" className="summary-note">{formProblem} <button type="button" className="text-button" onClick={settings}>Formulierinstellingen</button></p>}{distributionError&&<p role="alert">{distributionError}</p>}{importMessage&&<p role="status" className="availability-import-message">{importMessage}</p>}
     </section>
-    <section className="availability-list" aria-label="Reacties per wedstrijd"><div className="section-heading"><h2>Per wedstrijd</h2></div>{!roundMatches.length&&<p className="summary-note">Nog geen wedstrijden. Bereid je eerste ronde voor.</p>}{orderedMatches(roundMatches).map(m=>matchItem(m))}</section>
     <nav className="availability-next-actions" aria-label="Andere uitvragen"><button type="button" ref={preparationTrigger} className="new-round-entry" disabled={busy||archived} onClick={()=>void openPreparation()}><PlusIcon/><span><strong>{preparation?`Speelronde ${preparation.round} afmaken`:'Nieuwe speelronde'}</strong>{preparation&&<small>Wedstrijden en formulier voorbereiden</small>}</span><ChevronRightIcon/></button><button type="button" className="text-button earlier-rounds" onClick={()=>{keyboard.hide();setRoundHistoryOpen(true);}}>Eerdere speelrondes<ChevronRightIcon/></button></nav>{draftError&&<p role="alert">{draftError}</p>}
 
     </>}
@@ -994,7 +1244,7 @@ function AvailabilityScreen({managementOnly=false}:{managementOnly?:boolean}) {
     <BottomSheet open={detail!==null&&!browsing} onOpenChange={open=>{if(!open)setDetail(null);}} title="Beschikbaarheid" description={selected?`${selected.opponent} · ${selected.shortDate} · ${selected.time} · ${selected.venue}`:undefined} snap={0.86}>
       {(historical||historyRound!==null)&&<div className="read-only-note"><LockClosedIcon/><span>{historyRound!==null?"Eerdere antwoorden · alleen lezen":"Historische reacties · alleen lezen"}</span></div>}
       {selected&&!historical&&historyRound===null&&editingResponse&&<AttendanceEditor key={`${draftScope}:${selected.id}`} match={selected} flat/>}
-      {selected&&(!editingResponse||historical||historyRound!==null)&&<><ResponseSummary {...selectedCounts}/><div className="read-response-list">{players.map(p=><div className="response-row" key={p.id}><span className="player-number">{p.number}</span><strong>{p.shortName}</strong><span className="response-source">{provenance[`${selected.id}/${p.id}`]?.manual?"Coachcorrectie":provenance[`${selected.id}/${p.id}`]?"Formulier":""}</span><span className={`read-status ${selectedValues[p.id]}`}>{statusLabels[selectedValues[p.id]]}</span></div>)}</div>{!historical&&historyRound===null&&<button type="button" className="secondary-button" onClick={()=>setEditingResponse(true)}>Aanpassen</button>}{historical&&<GroupLink title="Wedstrijdcijfers bekijken" subtitle="Werkelijke aanwezigheid staat bij de statistieken" icon={<BarChartIcon/>} onClick={()=>{setDetail(null);navigate("stats",selected.id);}}/>}</>}
+      {selected&&(!editingResponse||historical||historyRound!==null)&&<><ResponseSummary {...selectedCounts}/><div className="read-response-list">{players.map(p=><div className="response-row" key={p.id}><span className="player-number">{p.number}</span><strong>{p.shortName}</strong><span className="response-source">{historyRound===null?availabilitySources[selected.id+'/'+p.id]:undefined}</span><span className={`read-status ${selectedValues[p.id]}`}>{statusLabels[selectedValues[p.id]]}</span></div>)}</div>{!historical&&historyRound===null&&<button type="button" className="secondary-button" onClick={()=>setEditingResponse(true)}>Aanpassen</button>}{historical&&<GroupLink title="Wedstrijdcijfers bekijken" subtitle="Werkelijke aanwezigheid staat bij de statistieken" icon={<BarChartIcon/>} onClick={()=>{setDetail(null);navigate("stats",selected.id);}}/>}</>}
       {state.rounds.length>0&&<details className="previous-responses editor-explanation"><summary>Eerdere antwoorden bekijken <ChevronDownIcon/></summary><p>Bekijk eerdere antwoorden zonder deze wedstrijd te veranderen. Coachcorrecties blijven behouden.</p><label className="form-label">Antwoorden bekijken<select aria-label="Beschikbaarheidsronde" value={historyRound??"current"} onChange={e=>setHistoryRound(e.target.value==="current"?null:Number(e.target.value))}><option value="current">Actuele antwoorden</option>{state.rounds.map((snapshot,i)=>snapshot[selected?.id??""]?<option key={i} value={i}>Eerdere antwoorden · ronde {i+1} · alleen lezen</option>:null)}</select></label></details>}
     </BottomSheet>
     <AvailabilityPage open={inviteOpen} onClose={()=>setInviteOpen(false)} title="Uitnodigingen" subtitle={`Speelronde ${selectedRound} · ${roundMatches.length} wedstrijden`}>
@@ -1343,10 +1593,270 @@ function downloadBackup(contents: string) {
   const link = document.createElement("a"); link.href = url; link.download = `coachmate-${new Date().toISOString().slice(0, 10)}.json`; link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+type ParentRequest=(path:string,data?:unknown)=>Promise<any>;
+type ParentSession={authenticated:boolean;dataSource?:'sheets'|'firestore';parentEnabled?:boolean;parentEmailEnabled?:boolean;coachAvailable?:boolean;sharedLiveEnabled?:boolean;role?:'parent'|'coach';email?:string};
+type ParentAnswerView={
+  id:string;date:string;time:string;opponent:string;venue:string;
+  answer:Availability;editable:boolean;processed:boolean;version:string|null;
+  updatedAt:number|null;actor:'self'|'other'|null;coachOverride:boolean;score:[number,number]|null;
+};
+type ParentChildView={linkId:string;name:string;number:number;teamName:string;clubName?:string;season:string;matches:ParentAnswerView[]};
+type ParentAnswerMeta={status:Availability;coachOverride:boolean};
+type AvailabilitySource='Google Forms'|'Ouderportaal'|'Coachcorrectie';
+const parentStatus:Record<Availability,string>={available:'Aanwezig',unavailable:'Afwezig',pending:'Nog niet beslist'};
+const parentInviteStorage='coachmate:parent-invitation';
+
+function ParentPortalScreen({api,session,loading,request,connectionError,reconnect}:{api:string;session:ParentSession|null;loading:boolean;request:ParentRequest;connectionError:string;reconnect:()=>void}) {
+  const keyboard=useKeyboard();
+  const [code,setCode]=useState('');
+  const [email,setEmail]=useState('');
+  const [emailLogin,setEmailLogin]=useState(false);
+  const [mailLink,setMailLink]=useState(()=>{
+    const fragment=new URLSearchParams(window.location.hash.slice(1));
+    const code=fragment.get('emailCode'),state=fragment.get('emailState');
+    return code&&state?{code,state}:null;
+  });
+  const [children,setChildren]=useState<ParentChildView[]|null>(null);
+  const [liveDrafts,setLiveDrafts]=useState<SharedDraft[]>([]);
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState(()=>{
+    const outcome=new URLSearchParams(window.location.search).get('auth');
+    if(outcome==='cancelled')return 'De Google-aanmelding is geannuleerd. Je kunt opnieuw inloggen.';
+    if(outcome==='email-invalid')return 'Deze inloglink is ongeldig. Vraag een nieuwe link aan.';
+    return outcome==='failed'?'Inloggen met Google is niet gelukt. Probeer opnieuw met het account van je uitnodiging.':'';
+  });
+  const [notice,setNotice]=useState('');
+  const [drafts,setDrafts]=useState<Record<string,{status:Availability;version:string|null}>>({});
+  const active=useRef(false);
+
+  useEffect(()=>{
+    const readLink=()=>{
+      const hash=new URLSearchParams(window.location.hash.slice(1));
+      const invite=hash.get('uitnodiging'),emailCode=hash.get('emailCode'),emailState=hash.get('emailState');
+      const valid=invite&&/^[A-Za-z0-9_-]{43}$/.test(invite)?invite:'';
+      try{
+        if(valid)sessionStorage.setItem(parentInviteStorage,valid);
+        setCode(valid||sessionStorage.getItem(parentInviteStorage)||'');
+      }catch{if(valid)setCode(valid);}
+      if(emailCode&&emailState)setMailLink({code:emailCode,state:emailState});
+      if(invite||emailCode)window.history.replaceState(null,'',window.location.pathname+window.location.search);
+    };
+    readLink();
+    window.addEventListener('hashchange',readLink);
+    return ()=>window.removeEventListener('hashchange',readLink);
+  },[]);
+
+  const refresh=async()=>{
+    if(active.current)return;
+    active.current=true;setBusy(true);setError('');
+    try{setChildren((await request('/api/parent')).children);}
+    catch(e){setError((e as Error).message);}
+    finally{active.current=false;setBusy(false);}
+  };
+  useEffect(()=>{
+    if(session?.authenticated&&session.role==='parent')void refresh();
+    else {setChildren(null);setDrafts({});}
+  },[session?.authenticated,session?.role,session?.email]);
+  useEffect(()=>{
+    if(!session?.authenticated||!session.sharedLiveEnabled){setLiveDrafts([]);return;}
+    let current=true;
+    const load=()=>void request('/api/parent/live').then(data=>{if(current)setLiveDrafts(data);}).catch(()=>{});
+    load();
+    window.addEventListener('online',load);
+    const timer=window.setInterval(load,10000);
+    return ()=>{current=false;window.removeEventListener('online',load);clearInterval(timer);};
+  },[session?.authenticated,session?.sharedLiveEnabled,session?.email]);
+
+  async function submitEmail(event:React.FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(active.current)return;
+    active.current=true;setBusy(true);setError('');setNotice('');keyboard.hide();
+    try{
+      if(mailLink){
+        await request('/api/parent/email/redeem',{email,...mailLink});
+        try{sessionStorage.removeItem(parentInviteStorage);}catch{}
+        window.location.replace('/?parent=1');
+      }else{
+        await request('/api/parent/email/request',{email,invite:code});
+        setNotice('Als dit e-mailadres gekoppeld of uitgenodigd is, ontvang je een inloglink. Controleer ook je spammap.');
+      }
+    }catch(e){setError((e as Error).message);}
+    finally{active.current=false;setBusy(false);}
+  }
+
+  async function accept(){
+    if(active.current)return;
+    active.current=true;setBusy(true);setError('');setNotice('');
+    try{
+      await request('/api/parent/claim',{code});
+      const data=await request('/api/parent');
+      setChildren(data.children);setCode('');
+      try{sessionStorage.removeItem(parentInviteStorage);}catch{}
+      setNotice('Je kind is gekoppeld.');
+    }catch(e){setError((e as Error).message);}
+    finally{active.current=false;setBusy(false);}
+  }
+  async function saveAnswer(child:ParentChildView,match:ParentAnswerView,key:string){
+    const draft=drafts[key];
+    if(!draft||active.current)return;
+    active.current=true;setBusy(true);setError('');setNotice('');
+    try {
+      const data=await request('/api/parent/answer',{linkId:child.linkId,matchId:match.id,status:draft.status,version:draft.version});
+      setChildren(data.children);
+      setDrafts(previous=>{const next={...previous};delete next[key];return next;});
+      setNotice('Beschikbaarheid opgeslagen voor '+match.opponent+'.');
+    } catch(e) {
+      setError((e as Error).message+' Je keuze blijft staan.');
+      if((e as Error&{status?:number}).status===409){
+        try{setChildren((await request('/api/parent')).children);}catch{}
+      }
+    } finally {active.current=false;setBusy(false);}
+  }
+
+  const signedIn=session?.authenticated&&session.role==='parent';
+  return <div className="coach-app parent-portal" data-source="parent">
+    <header className="parent-portal-header"><small>CoachMate</small><strong>Beschikbaarheid</strong></header>
+    <MobileScroll className="parent-scroll"><main className="screen-content parent-content">
+      {loading?<p role="status">CoachMate wordt geladen…</p>:null}
+      {!loading&&(!signedIn||mailLink)&&<section className="parent-card"><h1>CoachMate voor ouders</h1>
+        <p>Koppel je eigen kind met een persoonlijke uitnodiging van de coach. Daarna kun je voor elke komende wedstrijd je beschikbaarheid doorgeven.</p>
+        {session?.parentEnabled?<>{!mailLink&&<a className="primary-button" href={api+'/auth/parent/login'} onClick={()=>keyboard.hide()}>Inloggen met Google als ouder</a>}
+          {session.parentEmailEnabled&&(!(emailLogin||mailLink)?<button type="button" className="secondary-button" onClick={()=>setEmailLogin(true)}>Inloggen via e-mail</button>:
+            <form className="parent-email-login" onSubmit={submitEmail}>
+              {mailLink&&<p>Bevestig het e-mailadres waarop je de link hebt ontvangen.</p>}
+              <label className="form-label">E-mailadres<KeyboardInput type="email" autoComplete="email" value={email} required maxLength={254} disabled={busy} onChange={e=>setEmail(e.target.value)}/></label>
+              <button type="submit" className="primary-button" disabled={busy||!email.trim()}>{mailLink?'Inloggen met deze link':'Stuur een inloglink'}</button>
+              {mailLink&&<button type="button" className="text-button" disabled={busy} onClick={()=>{keyboard.hide();setMailLink(null);setEmailLogin(true);setError('');}}>Nieuwe link aanvragen</button>}
+            </form>)}
+        </>:
+          <><p>Het ouderportaal is hier nog niet beschikbaar.</p><button type="button" className="secondary-button" onClick={reconnect}>Opnieuw controleren</button></>}
+        <a className="text-button" href="/" onClick={()=>keyboard.hide()}>Naar CoachMate voor coaches</a>
+      </section>}
+      {connectionError&&<p role="alert" className="editor-error">{connectionError}</p>}
+      {error&&<p role="alert" className="editor-error">{error}</p>}
+      {notice&&<p role="status" className="parent-confirmed">{notice}</p>}
+      {signedIn&&!mailLink&&<>
+        {!!liveDrafts.length&&<section><h2>Live</h2>{liveDrafts.map(draft=><SharedMatchBoard key={draft.teamSeasonId+'/'+draft.matchId}
+          initial={draft} request={request} coach={false} refresh={async()=>(await request('/api/parent/live') as SharedDraft[]).find(item=>item.teamSeasonId===draft.teamSeasonId&&item.matchId===draft.matchId)}/>)}</section>}
+        {code&&<section className="parent-card"><h2>Uitnodiging accepteren</h2><p>Koppel het kind dat in je persoonlijke uitnodiging staat.</p>
+          <button type="button" className="primary-button" disabled={busy} onClick={()=>void accept()}>Kind koppelen</button>
+        </section>}
+        {children===null&&busy&&<p role="status">Je wedstrijden worden geladen…</p>}
+        {children?.length===0&&!code&&<section className="parent-card"><h2>Nog geen kind gekoppeld</h2><p>Open de persoonlijke uitnodigingslink van je coach.</p></section>}
+        {children?.map(child=><section className="parent-child" key={child.linkId}>
+          <div className="parent-card"><h1>{child.name}</h1><p>{[child.clubName,child.teamName,child.season].filter(Boolean).join(' · ')} · #{child.number}</p></div>
+          <h2>Komende wedstrijden</h2>
+          {!child.matches.some(m=>m.editable)&&<p>Er zijn geen komende wedstrijden om te beantwoorden.</p>}
+          {child.matches.filter(m=>m.editable).map(match=>{
+            const key=child.linkId+'/'+match.id,draft=drafts[key],selection=draft?.status??match.answer;
+            const conflict=draft&&draft.version!==match.version;
+            return <article className="parent-card" key={match.id}>
+              <h3>{match.opponent}</h3><p>{parentMatchLabel(match)}</p>
+              <p className="summary-note">Huidige antwoord: {parentStatus[match.answer]}{match.actor==='self'?' · door jou':match.actor==='other'?' · door een verzorger':''}</p>
+              {match.coachOverride&&<p className="summary-note">Er is een coachcorrectie. Je eigen antwoord blijft zichtbaar.</p>}
+              <div className="parent-answer-options" role="group" aria-label={'Beschikbaarheid voor '+match.opponent}>
+                {(Object.entries(parentStatus) as [Availability,string][]).map(([status,label])=>
+                  <button key={status} type="button" className="secondary-button" disabled={busy} aria-pressed={selection===status}
+                    onClick={()=>{setError('');setNotice('');setDrafts(old=>({...old,[key]:{status,version:match.version}}));}}>{label}</button>)}
+              </div>
+              {conflict&&<p className="summary-note">Het gedeelde antwoord is veranderd. Kies opnieuw om het te wijzigen.</p>}
+              {draft&&<button type="button" className="primary-button" disabled={busy||Boolean(conflict)} onClick={()=>void saveAnswer(child,match,key)}>Antwoord opslaan</button>}
+            </article>;
+          })}
+          {child.matches.some(m=>!m.editable)&&<details className="parent-card">
+            <summary>Eerdere wedstrijden</summary>
+            {child.matches.filter(m=>!m.editable).slice().reverse().map(m=><div className="parent-history-row" key={m.id}>
+              <strong>{m.opponent}{m.score&&' · '+m.score.join('–')}</strong><small>{parentMatchLabel(m)} · {parentStatus[m.answer]}</small>
+            </div>)}
+          </details>}
+        </section>)}
+        <div className="parent-portal-actions">
+          {session?.coachAvailable&&<a className="text-button" href={api+'/auth/coach/from-parent'} onClick={()=>keyboard.hide()}>Naar mijn coachteams</a>}
+          <button type="button" className="secondary-button" disabled={busy} onClick={()=>void refresh()}>Vernieuwen</button>
+          <button type="button" className="text-button" disabled={busy} onClick={async()=>{try{await request('/api/parent/logout',{});window.location.reload();}catch(e){setError((e as Error).message);}}}>Uitloggen</button>
+        </div>
+      </>}
+    </main></MobileScroll>
+  </div>;
+}
+
+function parentMatchLabel(match:ParentAnswerView) {
+  const date=new Date(match.date+'T12:00:00+01:00');
+  const readable=Number.isFinite(date.getTime())?date.toLocaleDateString('nl-NL',{timeZone:'Europe/Amsterdam',day:'numeric',month:'long',year:'numeric'}):match.date;
+  return [readable,match.time,match.venue].join(' · ');
+}
+
+function ParentAccessSettings({teamSeasonId,players,archived,request}:{teamSeasonId:string;players:Player[];archived:boolean;request:ParentRequest}) {
+  const [open,setOpen]=useState(false);
+  const [links,setLinks]=useState<{id:string;playerId:string;email:string}[]>([]);
+  const [playerId,setPlayerId]=useState('');
+  const [email,setEmail]=useState('');
+  const [url,setUrl]=useState('');
+  const [status,setStatus]=useState('');
+  const [error,setError]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [revoke,setRevoke]=useState<{id:string;email:string}|null>(null);
+  const keyboard=useKeyboard();
+  useEffect(()=>{
+    if(!open)return;
+    let current=true;
+    request('/api/parent-access?team='+encodeURIComponent(teamSeasonId)).then(data=>{if(current){setLinks(data.links);setError('');}}).catch(e=>{if(current)setError(e.message);});
+    return()=>{current=false;};
+  },[open,teamSeasonId]);
+  async function invite(){
+    keyboard.hide();setBusy(true);setError('');setStatus('');setUrl('');
+    try{const result=await request('/api/parent-access/invite',{teamSeasonId,playerId,email:email.trim()});setUrl(result.url);}
+    catch(e){setError((e as Error).message);}
+    finally{setBusy(false);}
+  }
+  async function revokeLink(){
+    if(!revoke)return;
+    setBusy(true);setError('');
+    try{const result=await request('/api/parent-access/revoke',{teamSeasonId,linkId:revoke.id});setLinks(result.links);setRevoke(null);setStatus('Oudertoegang ingetrokken.');}
+    catch(e){setError((e as Error).message);}
+    finally{setBusy(false);}
+  }
+  return <details className="settings-group" onToggle={e=>setOpen(e.currentTarget.open)}>
+    <summary><span><strong>Oudertoegang</strong><small>Kinderen koppelen en toegang beheren</small></span><ChevronDownIcon/></summary>
+    <div className="parent-access-settings">
+      {!archived&&<>
+        <label className="form-label">Speler voor ouderuitnodiging<select value={playerId} onChange={e=>{
+          const player=players.find(p=>p.id===e.target.value);setPlayerId(e.target.value);setEmail(player?.parentEmail??'');setUrl('');setStatus('');
+        }}><option value="">Kies een speler</option>{players.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label className="form-label">E-mailadres van de ouder<KeyboardInput type="email" value={email} onChange={e=>{setEmail(e.target.value);setUrl('');setStatus('');}}/></label>
+        <button type="button" className="primary-button" disabled={busy||!playerId||!validParentEmail(email.trim())} onClick={()=>void invite()}>Persoonlijke ouderlink maken</button>
+        {url&&<div className="parent-invitation-link">
+          <p>De link is zeven dagen geldig en werkt alleen met het gekozen Google-account.</p>
+          <label className="form-label">Persoonlijke ouderlink<KeyboardInput value={url} readOnly onFocus={e=>e.currentTarget.select()}/></label>
+          <button type="button" className="secondary-button" onClick={async()=>{try{await navigator.clipboard.writeText(url);setStatus('Ouderlink gekopieerd.');}catch{setStatus('Selecteer de link hierboven om hem handmatig te kopiëren.');}}}>Kopieer ouderlink</button>
+        </div>}
+      </>}
+      <h3>Gekoppelde ouders</h3>
+      {links.length===0&&<p>Er zijn nog geen actieve koppelingen.</p>}
+      {links.map(link=><div className="parent-link-row" key={link.id}><span><strong>{players.find(p=>p.id===link.playerId)?.name??'Speler'}</strong><small>{link.email}</small></span>
+        <button type="button" className="text-button" onClick={()=>{keyboard.hide();setError('');setRevoke(link);}}>Intrekken</button></div>)}
+      {status&&<p role="status">{status}</p>}{error&&!revoke&&<p role="alert" className="editor-error">{error}</p>}
+    </div>
+    <BottomSheet open={Boolean(revoke)} onOpenChange={next=>{if(!next&&!busy)setRevoke(null);}} title="Oudertoegang intrekken" description={revoke?.email}>
+      <p className="summary-note">De ouder kan de gegevens van dit kind daarna niet meer inzien of aanpassen. Eerdere antwoorden blijven bewaard.</p>
+      {error&&<p role="alert" className="editor-error">{error}</p>}
+      <button type="button" className="primary-button" disabled={busy} onClick={()=>void revokeLink()}>Toegang intrekken</button>
+    </BottomSheet>
+  </details>;
+}
+
 export default function Prototype() {
   const [loaded] = useState(loadState);
   const [state, dispatch] = useReducer((current: CoachState, action: Action | { type: "replace"; state: CoachState }) => action.type === "replace" ? action.state : coachReducer(current, action), loaded.state);
-  const [session, setSession] = useState<{ configured: boolean; authenticated: boolean; csrf?: string; geminiSwaps?: boolean; email?: string } | null>(null);
+  const [session, setSession] = useState<(ParentSession & {configured:boolean;csrf?:string;geminiSwaps?:boolean})|null>(null);
+  const [parentEntry] = useState(()=>new URLSearchParams(window.location.search).get('parent')==='1');
+  const inParentPortal=parentEntry;
+  const [parentPortalEnabled,setParentPortalEnabled]=useState(false);
+  const [parentAnswers,setParentAnswers]=useState<Record<string,ParentAnswerMeta>>({});
+  const [availabilitySources,setAvailabilitySources]=useState<Record<string,AvailabilitySource>>({});
+  function applyParentInfo(result:{parentPortalEnabled?:boolean;parentAnswers?:Record<string,ParentAnswerMeta>;availabilitySources?:Record<string,AvailabilitySource>}) {
+    setParentPortalEnabled(result.parentPortalEnabled===true);setParentAnswers(result.parentAnswers??{});setAvailabilitySources(result.availabilitySources??{});
+  }
   const [remote, setRemote] = useState(false);
   const [booting,setBooting]=useState(!designMode);
   const [sourceConflict,setSourceConflict]=useState(false);
@@ -1376,7 +1886,16 @@ export default function Prototype() {
   const [invites, setInvites] = useState<FormInvite[]>([]);
   const [formJobs,setFormJobs]=useState<FormJob[]>([]),[deliveries,setDeliveries]=useState<FormDelivery[]>([]),[mailReady,setMailReady]=useState(false);
   const serviceToken=useRef("");
-  function applyForms(data:any){setFormLinks(data.forms);setInvites(data.invites);setFormJobs(data.jobs??[]);setDeliveries(data.deliveries??[]);setMailReady(data.mailReady===true);if(serviceToken.current&&serviceToken.current===data.serviceDataToken&&data.revision===revision.current.revision&&!journalRef.current)revision.current.sourceToken=data.sourceToken;serviceToken.current=data.serviceDataToken??"";}
+  function applyForms(data:any){
+    setFormLinks(data.forms);setInvites(data.invites);setFormJobs(data.jobs??[]);setDeliveries(data.deliveries??[]);setMailReady(data.mailReady===true);
+    const current=revision.current;
+    // A Forms status response cannot acknowledge parent answers the coach has not loaded.
+    if(serviceToken.current&&serviceToken.current===data.serviceDataToken&&data.revision===current.revision&&!journalRef.current&&
+       typeof data.sourceToken==='string'&&data.sourceToken.split(':parent:')[1]===current.sourceToken?.split(':parent:')[1]) {
+      current.sourceToken=data.sourceToken;
+    }
+    serviceToken.current=data.serviceDataToken??"";
+  }
   async function refreshDistribution(){if(pending.current)return;const data=await request(`/api/forms?team=${encodeURIComponent(stateRef.current.catalog!.teamSeasonId)}`);applyForms(data);const job=data.jobs?.find((job:any)=>job.status==="awaiting-mapping");if(job&&!journalRef.current)await mutate("/api/forms/finalize",{formId:job.formId});}
   const api = (import.meta as ImportMeta & { env: Record<string, string> }).env.VITE_API_ORIGIN || (["127.0.0.1", "localhost"].includes(window.location.hostname) ? "http://127.0.0.1:4175" : window.location.origin);
   async function request(path:string,data?:unknown,timeoutMs=30000){
@@ -1393,8 +1912,8 @@ export default function Prototype() {
     if(designMode)return;
     setBooting(true);
     try {
-      const info=await request('/api/session');setSession(info);setConnectionError('');
-      if(info.authenticated){
+      const info=await request(parentEntry?'/api/parent/session':'/api/session');setSession(info);setConnectionError('');
+      if(info.authenticated&&!parentEntry){
         let remembered='';try{remembered=localStorage.getItem(`coachmate:team:${info.email}`)??'';}catch{}
         const data=await request(`/api/teams?team=${encodeURIComponent(remembered)}`);setTeams(data.teams);setSeasons(data.seasons);
         const chosen=data.teams.find((t:{teamSeasonId:string})=>t.teamSeasonId===remembered)??(data.teams.length===1?data.teams[0]:null);
@@ -1425,6 +1944,7 @@ export default function Prototype() {
       const conflict=Boolean(cached&&(cached.revision!==result.revision||cached.sourceToken!==result.sourceToken));
       cacheLocked.current=false;setSourceConflict(conflict);setLocalJournal(cached);
       setSharedState(conflict?next:null);
+      applyParentInfo(result);
       revision.current={revision:cached?.revision??result.revision,sourceToken:cached?.sourceToken??result.sourceToken};
       setRemote(true);stateRef.current=cached?.state??next;dispatch({type:'replace',state:cached?.state??next});
       setLoadFailure(null);phase='connection';
@@ -1499,7 +2019,7 @@ export default function Prototype() {
     try{
       const team=stateRef.current.catalog!.teamSeasonId,result=await request(`/api/state?team=${encodeURIComponent(team)}`),next=parseState(JSON.stringify(result.state));
       if(journalRef.current){throw new Error('Je lokale wedstrijdconcept blijft bewaard. Sla het eerst op voordat je de rondegegevens vernieuwt.');}
-      revision.current={revision:result.revision,sourceToken:result.sourceToken};stateRef.current=next;dispatch({type:'replace',state:next});
+      revision.current={revision:result.revision,sourceToken:result.sourceToken};stateRef.current=next;dispatch({type:'replace',state:next});applyParentInfo(result);
       if(result.distribution)applyForms(result.distribution);else applyForms(await request(`/api/forms?team=${encodeURIComponent(team)}`));setConnectionError('');return next;
     }catch(error){setConnectionError((error as Error).message);return null;}
     finally{pending.current=false;setBusy(false);}
@@ -1511,6 +2031,7 @@ export default function Prototype() {
     pending.current = true; setBusy(true); setConnectionError("");
     try { const result = await request(path, { ...data, ...revision.current, state: undefined, teamSeasonId: state.catalog.teamSeasonId });
       const savedState=parseState(JSON.stringify(result.state));
+      applyParentInfo(result);
       const draft = journalRef.current;
       const preserveDraft = serviceOnly && draft;
       if (preserveDraft) {
@@ -1523,7 +2044,7 @@ export default function Prototype() {
       if(path==="/api/action-batch" && journalRef.current){const old=journalRef.current;try{localStorage.removeItem(journalKey(old.account,old.teamSeasonId));}catch{}setLocalJournal(null);}
       if(!serviceOnly||!journalRef.current){setSharedState(null);stateRef.current=savedState; dispatch({ type: "replace", state:savedState });}
       if (result.teams) setTeams(result.teams);
-      setToast(path.includes("import") ? `${result.imported} ${path.includes("history") ? result.imported===1?"wedstrijd":"wedstrijden" : result.imported===1?"antwoord":"antwoorden"} verwerkt${result.invalidCodes ? ` · ${result.invalidCodes} ${result.invalidCodes===1?"inzending":"inzendingen"} met ongeldige code overgeslagen` : ""}` : "Opgeslagen in Google Sheets");
+      setToast(path.includes("import") ? `${result.imported} ${path.includes("history") ? result.imported===1?"wedstrijd":"wedstrijden" : result.imported===1?"antwoord":"antwoorden"} verwerkt${result.invalidCodes ? ` · ${result.invalidCodes} ${result.invalidCodes===1?"inzending":"inzendingen"} met ongeldige code overgeslagen` : ""}` : session?.dataSource==="firestore" ? "Opgeslagen in Firestore" : "Opgeslagen in Google Sheets");
       if(!serviceOnly||!journalRef.current)setSourceConflict(false);if(result.distribution)applyForms(result.distribution);else if(path.includes("forms")){try{applyForms(await request(`/api/forms?team=${encodeURIComponent(state.catalog.teamSeasonId)}`));}catch{setConnectionError("Opgeslagen. De verzendstatus kon nog niet worden vernieuwd.");}}
       return true;
     } catch (error) { setSourceConflict((error as Error & {status?:number}).status===409);setConnectionError((error as Error).message + " Je lokale invoer blijft bewaard."); setToast(""); return false; }
@@ -1557,10 +2078,10 @@ export default function Prototype() {
   const { bottomInset } = useKeyboardInsets();
   const navInset=realDevice?"env(safe-area-inset-bottom, 0px)":`${bottomInset}px`;
   useEffect(() => {
-    if (blocked || remote) return;
+    if (blocked || remote || inParentPortal) return;
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); setStorageError(""); }
     catch { setStorageError("Opslaan lukt niet. Wijzigingen staan alleen in het geheugen. Exporteer een reservekopie voordat je sluit."); }
-  }, [state, blocked, remote]);
+  }, [state, blocked, remote, inParentPortal]);
   useEffect(() => {
     const conflict = (event: StorageEvent) => { if(remote && session?.email && (event.key===null||event.key===journalKey(session.email,state.catalog!.teamSeasonId))){cacheLocked.current=true;setConnectionError("Het lokale wedstrijdconcept is in een ander venster gewijzigd. Vernieuw de gegevens om dat concept te laden.");} if (!remote && (event.key === STORAGE_KEY || event.key === null)) setBlocked("Gegevens zijn in een ander venster gewijzigd. Herlaad deze pagina om verder te werken met de laatste versie."); };
     window.addEventListener("storage", conflict); return () => window.removeEventListener("storage", conflict);
@@ -1606,27 +2127,29 @@ export default function Prototype() {
   const send = async (action: Action): Promise<boolean> => { if (session?.authenticated && !remote) { setSettingsOpen(true); return false; } if (remote) {if(action.type==="finish")return save([action]);if(localActionTypes.has(action.type))return stage(action);return mutate("/api/action", { action });} if (blocked || state.catalog?.archived) { setToast("Deze gegevens kunnen niet worden gewijzigd"); return false; } const next = coachReducer(stateRef.current, (action.type === "availability" || action.type === "availability-batch") ? {...action, now:Date.now()} : action); if ((["prepare-match", "new-round", "add-matches", "save-round-matches", "goal", "away-goal", "edit-goal"].includes(action.type)||action.type.startsWith("assistant-")) && next === stateRef.current) { setToast("Sluit de actieve wedstrijd eerst af."); return false; } try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { setStorageError("Opslaan mislukt; je invoer blijft in het geheugen. Maak ruimte vrij en probeer opnieuw."); if (action.type.startsWith("assistant-")||["save-stats", "finish", "availability-batch", "new-round", "add-matches", "save-round-matches"].includes(action.type)) return false; dispatch({ type: "replace", state: next }); return true; } stateRef.current=next;dispatch({ type: "replace", state: next }); return true; };
   const titles: Record<Tab, string> = { dashboard: "Overzicht", live: "Live wedstrijd", availability: "Beschikbaarheid", stats: "Statistieken" };
   const catalog = state.catalog ?? demoCatalog();
-  const needsTeam = Boolean(session?.authenticated && !remote);
+  const needsTeam = Boolean(session?.authenticated && !remote && !inParentPortal);
   const assistantAttempt=useRef('');
   const assistantContext=adviceContext(state),assistant=adviceFor(state);
   const deferredReady=Boolean(assistant&& !['skipped','executed'].includes(assistant.status)&&state.live.elapsedMs>=(assistant.deferUntilMs??Infinity));
   const plannedChange=assistant?nextAdvice(state,assistant):null;
   const missedMoment=Boolean(assistant&&['proposed','accepted'].includes(assistant.status)&&assistant.deferUntilMs===undefined&&plannedChange&&state.live.elapsedMs-plannedChange.startMs>60000);
   useEffect(()=>{
-    if(!assistant||busy||needsTeam||catalog.archived||state.live.phase==='Einde'||isProcessed(state,catalog.liveMatchId)||state.live.elapsedMs===0&&!state.live.preparation)return;
+    if(!assistant||busy||needsTeam||inParentPortal||catalog.archived||state.live.phase==='Einde'||isProcessed(state,catalog.liveMatchId)||state.live.elapsedMs===0&&!state.live.preparation)return;
     if(assistant.context===assistantContext&&!deferredReady&&!missedMoment)return;
     const key=`${assistantContext}:${deferredReady}:${missedMoment}:${assistant.plan.id}`;
     if(assistantAttempt.current===key)return;
     assistantAttempt.current=key;
     try {generateAdvice(state,Date.now());} catch {return;}
     void send({type:'assistant-plan',id:crypto.randomUUID(),eventId:crypto.randomUUID(),expectedEpoch:adviceEpoch(state),now:Date.now()});
-  },[assistantContext,deferredReady,missedMoment,busy,needsTeam,assistant?.plan.id]);
-  const settingsPage = <main className="screen-content settings-screen" aria-label="Instellingen"><p className="settings-intro">Beheer je account, team en gegevens.</p><div className="settings-content"><section className="settings-account"><div className="settings-account-heading"><span className="settings-account-mark"><GearIcon /></span><div><h2>Account en gegevensbron</h2><span className="settings-source-label">{remote ? "Google Sheets" : session?.authenticated ? "Google-team niet geladen" : "Lokale demo"}</span></div></div><p>{session?.authenticated ? `Ingelogd als ${session.email}` : session?.configured ? "Log in om je eigen team te openen." : "Google is nog niet beschikbaar. Controleer de verbinding."}</p>{!session?.authenticated ? <><div className="settings-account-actions"><button type="button" className="primary-button" disabled={!session?.configured} onClick={() => { window.location.href = api + "/auth/login"; }}>Inloggen met Google</button><button type="button" className="text-button" aria-label="Verbinding controleren" onClick={() => { void checkConnection(); }}>Controleren</button></div></> : <><label className="form-label">Seizoen en team<select aria-label="Seizoen en team" disabled={busy} value={remote ? catalog.teamSeasonId : ""} onChange={e => { if (e.target.value) void selectTeam(e.target.value); }}><option value="">Kies een teamseizoen</option>{seasons.map(season => <optgroup key={season.seasonId} label={`${season.name}${season.archived ? " · archief" : ""}`}>{teams.filter(t => t.seasonId === season.seasonId).map(team => <option key={team.teamSeasonId} value={team.teamSeasonId}>{team.clubName ? `${team.clubName} · ` : ""}{team.teamName}</option>)}</optgroup>)}</select></label>{remote && <button type="button" className="secondary-button" disabled={busy} onClick={() => { void selectTeam(catalog.teamSeasonId); }}>Gegevens vernieuwen</button>}<button type="button" className="text-button" disabled={busy} onClick={async () => { try { await request("/api/logout", {}); window.location.reload(); } catch { setConnectionError("Uitloggen mislukt. Probeer opnieuw."); } }}>Uitloggen</button></>}{connectionError && <p role="alert">{connectionError}</p>}{loadFailure&&<div className="settings-account-actions"><button type="button" className="primary-button" disabled={busy} onClick={()=>void inspectLoadRecovery()}>Herstel bekijken</button><button type="button" className="secondary-button" onClick={exportLoadRecovery}>Herstelbestand exporteren</button></div>}{busy && <p role="status">Google-gegevens worden verwerkt…</p>}</section><div hidden={needsTeam}><details className="settings-group"><summary><div><strong>Team en wedstrijd</strong><span>{catalog.teamName} · {state.team.periods === 2 ? "2 helften" : "4 kwarten"}</span></div><ChevronRightIcon /></summary><div className="settings-panel" inert={busy || needsTeam || (remote && catalog.archived)}><TeamSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`} /></div></details><details className="settings-group"><summary><div><strong>Opstellingsvarianten</strong><span>Formaties voor 6, 8 en 11 spelers</span></div><ChevronRightIcon/></summary><div className="settings-panel" inert={busy||needsTeam||catalog.archived}><FormationSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`}/></div></details><details className="settings-group"><summary><div><strong>AI-wisselassistent</strong><span>Speelminuten, rotatie en keepers</span></div><ChevronRightIcon/></summary><div className="settings-panel" inert={busy||needsTeam||catalog.archived}><AssistantSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`}/></div></details>{remote && <details className="settings-group"><summary><div><strong>Club en team</strong><span>{catalog.clubName || "Clubnaam instellen"} · {catalog.teamName}</span></div><ChevronRightIcon /></summary><div className="settings-panel" inert={busy || needsTeam || catalog.archived}><ClubSettings key={`${catalog.teamSeasonId}-${catalog.clubName}-${catalog.teamName}`} clubName={catalog.clubName ?? ""} teamName={catalog.teamName} onSave={(clubName, teamName) => mutate("/api/club", { clubName, teamName })} /></div></details>}<details className="settings-group"><summary><div><strong>Speelrondes</strong><span>Rondes en wedstrijden beheren</span></div><ChevronRightIcon/></summary><div className="settings-panel"><AvailabilityScreen managementOnly/></div></details>{remote&&<details className="settings-group"><summary><div><strong>Beschikbaarheidsformulier</strong><span>Voorbeeld, opmaak en Google-koppeling</span></div><ChevronRightIcon/></summary><div className="settings-panel"><RoundFormSettings/></div></details>}<details className="settings-group"><summary><div><strong>Gegevens beheren</strong><span>Reservekopie{remote ? " en historische import" : " van deze demo"}</span></div><ChevronRightIcon /></summary><div className="settings-panel">{remote && <button type="button" className="secondary-button" disabled={busy || catalog.archived || needsTeam} onClick={() => { void mutate("/api/history/import", {}); }}>Historische wedstrijden importeren</button>}<p>{remote ? "De Google Sheet bewaart de gegevens per teamseizoen. Maak daarnaast regelmatig een reservekopie." : "Maak regelmatig een export. Het wissen van browsergegevens verwijdert de lokale demo."}</p><button type="button" className="primary-button" onClick={() => { try { const raw = blocked ? localStorage.getItem(STORAGE_KEY) : null; downloadBackup(raw ?? JSON.stringify(state, null, 2)); } catch { setToast("Export van de bestaande opslag is niet beschikbaar"); } }}>Reservekopie exporteren</button>{remote&&<button type="button" className="secondary-button" onClick={exportLoadRecovery}>Lokale conceptkopieën exporteren</button>}{blocked && <button type="button" className="secondary-button" onClick={() => window.location.reload()}>Opnieuw laden</button>}<p className="muted">{remote ? "Deel de bron uitsluitend met bevoegde coaches." : "Gebruik de lokale demo alleen met voorbeeldgegevens."}</p></div></details></div></div></main>;
+  },[assistantContext,deferredReady,missedMoment,busy,needsTeam,inParentPortal,assistant?.plan.id]);
+  const settingsPage = <main className="screen-content settings-screen" aria-label="Instellingen"><p className="settings-intro">Beheer je account, team en gegevens.</p><div className="settings-content"><section className="settings-account"><div className="settings-account-heading"><span className="settings-account-mark"><GearIcon /></span><div><h2>Account en gegevensbron</h2><span className="settings-source-label">{remote ? session?.dataSource==="firestore" ? "Firestore-pilot" : "Google Sheets" : session?.authenticated ? "Google-team niet geladen" : "Lokale demo"}</span></div></div><p>{session?.authenticated ? `Ingelogd als ${session.email}` : session?.configured ? "Log in om je eigen team te openen." : "Google is nog niet beschikbaar. Controleer de verbinding."}</p>{!session?.authenticated ? <><div className="settings-account-actions"><button type="button" className="primary-button" disabled={!session?.configured} onClick={() => { window.location.href = api + "/auth/login"; }}>Inloggen met Google</button><button type="button" className="text-button" aria-label="Verbinding controleren" onClick={() => { void checkConnection(); }}>Controleren</button></div>{session?.parentEnabled&&<a href="/?parent=1" className="text-button">Naar het ouderportaal</a>}</> : <><label className="form-label">Seizoen en team<select aria-label="Seizoen en team" disabled={busy} value={remote ? catalog.teamSeasonId : ""} onChange={e => { if (e.target.value) void selectTeam(e.target.value); }}><option value="">Kies een teamseizoen</option>{seasons.map(season => <optgroup key={season.seasonId} label={`${season.name}${season.archived ? " · archief" : ""}`}>{teams.filter(t => t.seasonId === season.seasonId).map(team => <option key={team.teamSeasonId} value={team.teamSeasonId}>{team.clubName ? `${team.clubName} · ` : ""}{team.teamName}</option>)}</optgroup>)}</select></label>{remote && <button type="button" className="secondary-button" disabled={busy} onClick={() => { void selectTeam(catalog.teamSeasonId); }}>Gegevens vernieuwen</button>}{session.parentEnabled&&session.dataSource==="firestore"&&<a className="text-button" href={api+"/auth/parent/from-coach"} onClick={()=>keyboard.hide()}>Naar mijn ouderportaal</a>}<button type="button" className="text-button" disabled={busy} onClick={async () => { try { await request("/api/logout", {}); window.location.reload(); } catch { setConnectionError("Uitloggen mislukt. Probeer opnieuw."); } }}>Uitloggen</button></>}{connectionError && <p role="alert">{connectionError}</p>}{loadFailure&&<div className="settings-account-actions"><button type="button" className="primary-button" disabled={busy} onClick={()=>void inspectLoadRecovery()}>Herstel bekijken</button><button type="button" className="secondary-button" onClick={exportLoadRecovery}>Herstelbestand exporteren</button></div>}{busy && <p role="status">Google-gegevens worden verwerkt…</p>}</section><div hidden={needsTeam}>{remote&&parentPortalEnabled&&<ParentAccessSettings key={catalog.teamSeasonId} teamSeasonId={catalog.teamSeasonId} players={catalog.players} archived={catalog.archived} request={request}/>}<details className="settings-group"><summary><div><strong>Team en wedstrijd</strong><span>{catalog.teamName} · {state.team.periods === 2 ? "2 helften" : "4 kwarten"}</span></div><ChevronRightIcon /></summary><div className="settings-panel" inert={busy || needsTeam || (remote && catalog.archived)}><TeamSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`} /></div></details><details className="settings-group"><summary><div><strong>Opstellingsvarianten</strong><span>Formaties voor 6, 8 en 11 spelers</span></div><ChevronRightIcon/></summary><div className="settings-panel" inert={busy||needsTeam||catalog.archived}><FormationSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`}/></div></details><details className="settings-group"><summary><div><strong>AI-wisselassistent</strong><span>Speelminuten, rotatie en keepers</span></div><ChevronRightIcon/></summary><div className="settings-panel" inert={busy||needsTeam||catalog.archived}><AssistantSettings key={`${remote?session?.email:"demo"}:${catalog.teamSeasonId}`}/></div></details>{remote && <details className="settings-group"><summary><div><strong>Club en team</strong><span>{catalog.clubName || "Clubnaam instellen"} · {catalog.teamName}</span></div><ChevronRightIcon /></summary><div className="settings-panel" inert={busy || needsTeam || catalog.archived}><ClubSettings key={`${catalog.teamSeasonId}-${catalog.clubName}-${catalog.teamName}`} clubName={catalog.clubName ?? ""} teamName={catalog.teamName} onSave={(clubName, teamName) => mutate("/api/club", { clubName, teamName })} /></div></details>}<details className="settings-group"><summary><div><strong>Speelrondes</strong><span>Rondes en wedstrijden beheren</span></div><ChevronRightIcon/></summary><div className="settings-panel"><AvailabilityScreen managementOnly/></div></details>{remote&&<details className="settings-group"><summary><div><strong>Beschikbaarheidsformulier</strong><span>Voorbeeld, opmaak en Google-koppeling</span></div><ChevronRightIcon/></summary><div className="settings-panel"><RoundFormSettings/></div></details>}<details className="settings-group"><summary><div><strong>Gegevens beheren</strong><span>Reservekopie{remote ? " en historische import" : " van deze demo"}</span></div><ChevronRightIcon /></summary><div className="settings-panel">{remote && <button type="button" className="secondary-button" disabled={busy || catalog.archived || needsTeam} onClick={() => { void mutate("/api/history/import", {}); }}>Historische wedstrijden importeren</button>}<p>{remote ? "De Google Sheet bewaart de gegevens per teamseizoen. Maak daarnaast regelmatig een reservekopie." : "Maak regelmatig een export. Het wissen van browsergegevens verwijdert de lokale demo."}</p><button type="button" className="primary-button" onClick={() => { try { const raw = blocked ? localStorage.getItem(STORAGE_KEY) : null; downloadBackup(raw ?? JSON.stringify(state, null, 2)); } catch { setToast("Export van de bestaande opslag is niet beschikbaar"); } }}>Reservekopie exporteren</button>{remote&&<button type="button" className="secondary-button" onClick={exportLoadRecovery}>Lokale conceptkopieën exporteren</button>}{blocked && <button type="button" className="secondary-button" onClick={() => window.location.reload()}>Opnieuw laden</button>}<p className="muted">{remote ? "Deel de bron uitsluitend met bevoegde coaches." : "Gebruik de lokale demo alleen met voorbeeldgegevens."}</p></div></details></div></div></main>;
   useEffect(() => { if (!settingsOpen) return; const close = (event: KeyboardEvent) => { if (event.key === "Escape") { keyboard.hide(); setSettingsOpen(false); } }; window.addEventListener("keydown", close); return () => window.removeEventListener("keydown", close); }, [settingsOpen, keyboard]);
   const [conceptOptions,setConceptOptions]=useState(false);
   const retrySave=()=>{if(sourceConflict)void reviewRecovery();else void save();};
   const persistence=<section className="local-save-bar" aria-label={journal?'Lokaal wedstrijdconcept':'Opslagstatus'}>{journal?.attempted?<InfoCircledIcon/>:<CheckCircledIcon/>}<span role="status">{journal?(journal.attempted?'Opslaan niet bevestigd':'Lokaal bewaard'):remote?'Alles opgeslagen':'Lokaal bewaard'}{journal&&<small className="sr-only"> · {journal.actions.length} {journal.actions.length===1?'wijziging':'wijzigingen'}</small>}</span>{journal&&<><button type="button" className="text-button" aria-label={journal.attempted?'Opnieuw opslaan':'Tussentijds opslaan'} disabled={busy} onClick={retrySave}>{journal.attempted?'Opnieuw':'Opslaan'}</button><button type="button" className="text-button" aria-label="Conceptopties" onClick={()=>{keyboard.hide();setConceptOptions(true);}}>Meer</button></>}</section>;
-  return <Store value={{ state, rankSwaps:remote&&session?.geminiSwaps ? async options => (await request("/api/assistant/gemini-swaps",{options},5500)).advice : undefined, sharedState, refreshMatchStatus, hasPendingSave:Boolean(journal), awaitingSaveConfirmation:Boolean(journal?.attempted), send, save, persistence, remote, busy, formLinks, invites, formJobs, deliveries, mailReady, refreshDistribution, reloadRoundData, prepareRound:round=>mutate("/api/forms/prepare",{round}), sendInvitations:(formId,playerIds,batchId,message,channel)=>mutate("/api/forms/invite",{formId,playerIds,batchId,message,channel}), checkForm: formId => request(`/api/forms/status?team=${encodeURIComponent(catalog.teamSeasonId)}&form=${encodeURIComponent(formId)}`), saveFormLink:(formId,template)=>mutate("/api/forms/link",{formId,template}), focusMatch, statsBack, setStatsBack, statsVisible: activeTab === "stats" && !settingsOpen && !needsTeam, draftScope: `${remote ? session?.email : "demo"}:${catalog.teamSeasonId}`, refreshForms: async round => { await refreshDistribution(); const ok=await mutate("/api/forms/import", {round}); if(ok){try{localStorage.setItem(`coachmate:last-import:${session?.email}:${catalog.teamSeasonId}:${round}`,new Date().toISOString());}catch{}} return ok; }, createForm: round => { void mutate("/api/forms/create", { round }); }, notify: message => { setToast(message); }, navigate, settings: () => { keyboard.hide(); setSettingsOpen(true); } }}><div className="coach-app" style={{"--coach-nav-inset":navInset,"--coach-header-height":`${headerHeight}px`} as React.CSSProperties} data-source={remote ? "google" : "demo"}>{booting?<div className="launch-screen" role="status"><span className="ios-spinner"/><strong>CoachMate</strong><span>Je team wordt geladen…</span></div>:<><Header title={settingsOpen ? "Instellingen" : titles[activeTab]} onBack={settingsOpen ? () => { keyboard.hide(); setSettingsOpen(false); } : undefined} eyebrow={needsTeam?"Google-team niet geladen":`${catalog.clubName ? catalog.clubName + " · " : ""}${catalog.teamName} · ${catalog.seasonName}`} /><div className="app-notices">{!noticeDismissed && ((!remote && (blocked || storageError)) || connectionError) ? <div className="storage-warning" role="alert"><button type="button" className="notice-close" aria-label="Melding sluiten" onClick={()=>setNoticeDismissed(true)}><Cross1Icon/></button>{[!remote && (blocked || storageError), connectionError === "Failed to fetch" ? "Geen verbinding met de gegevensbron. Je gebruikt momenteel de lokale demo." : connectionError].filter(Boolean).join(" ")}<button type="button" disabled={busy} onClick={() => {if(loadFailure)void inspectLoadRecovery();else if(journalRef.current)retrySave();else if(remote)void selectTeam(catalog.teamSeasonId);else void checkConnection();}}>Opnieuw proberen</button><button type="button" onClick={openRecoverySettings}>Instellingen</button></div> : null}{busy&&!booting&&<p className="sync-status" role="status"><span className="ios-spinner"/>Gegevens worden verwerkt…</p>}</div>{catalog.archived && <p className="archive-banner">Archief · alleen lezen</p>}<MobileScroll key={`${remote ? session?.email : "demo"}:${catalog.teamSeasonId}`} className="app-screen"><div className="app-shell">{remote&&journal&&(activeTab!=="live"||settingsOpen)&&persistence}{settingsOpen && settingsPage}<div hidden={settingsOpen}>{needsTeam ? <main className="screen-content"><h1>{busy ? "Team laden…" : loadFailure ? "Team laden geblokkeerd" : "Kies je team"}</h1><p>{loadFailure?"Je Google-account is ingelogd. Je wedstrijdgegevens konden niet worden geladen. Bewaar het herstelbestand voordat je verdergaat.":"Open je Google-team om wedstrijden en statistieken te gebruiken."}</p>{loadFailure?<div className="sheet-actions"><button type="button" className="primary-button" disabled={busy} onClick={()=>void inspectLoadRecovery()}>Herstel bekijken</button><button type="button" className="secondary-button" onClick={exportLoadRecovery}>Herstelbestand exporteren</button></div>:<button type="button" className="primary-button" onClick={openRecoverySettings}>Team kiezen</button>}</main> : activeTab === "dashboard" ? <Dashboard /> : activeTab === "live" ? <LiveScreen /> : activeTab === "availability" ? <AvailabilityScreen /> : null}<div hidden={activeTab !== "stats" || needsTeam}><StatsScreen key={`${remote ? session?.email : "demo"}:${catalog.teamSeasonId}`} homeRequest={statsHomeRequest} /></div></div></div></MobileScroll><AppNav tab={settingsOpen ? null : activeTab} onChange={tab=>{if(tab==="stats"&&activeTab==="stats"&&!settingsOpen&&!needsTeam)setStatsHomeRequest(request=>request+1);navigate(tab);}} />{toast ? <div className="toast" role="status" style={{ bottom:`calc(var(--coach-nav-height) + ${navInset} + 8px)` }}><CheckCircledIcon />{toast}</div> : null}</>}
+  const sharedLiveMatch=catalog.matches.find(match=>match.id===catalog.liveMatchId&&!isProcessed(state,match.id));
+  if(inParentPortal) return <ParentPortalScreen api={api} session={session} loading={booting} request={request} connectionError={connectionError} reconnect={()=>void checkConnection()}/>;
+  return <Store value={{ state, rankSwaps:remote&&session?.geminiSwaps ? async options => (await request("/api/assistant/gemini-swaps",{options},5500)).advice : undefined, sharedState, refreshMatchStatus, parentPortalEnabled,availabilitySources,parentAnswers, releaseParentOverride:(matchId,playerId)=>mutate('/api/parent-access/release',{matchId,playerId}), hasPendingSave:Boolean(journal), awaitingSaveConfirmation:Boolean(journal?.attempted), send, save, persistence, remote, busy, formLinks, invites, formJobs, deliveries, mailReady, refreshDistribution, reloadRoundData, prepareRound:round=>mutate("/api/forms/prepare",{round}), sendInvitations:(formId,playerIds,batchId,message,channel)=>mutate("/api/forms/invite",{formId,playerIds,batchId,message,channel}), checkForm: formId => request(`/api/forms/status?team=${encodeURIComponent(catalog.teamSeasonId)}&form=${encodeURIComponent(formId)}`), saveFormLink:(formId,template)=>mutate("/api/forms/link",{formId,template}), focusMatch, statsBack, setStatsBack, statsVisible: activeTab === "stats" && !settingsOpen && !needsTeam, draftScope: `${remote ? session?.email : "demo"}:${catalog.teamSeasonId}`, refreshForms: async round => { await refreshDistribution(); const ok=await mutate("/api/forms/import", {round}); if(ok){try{localStorage.setItem(`coachmate:last-import:${session?.email}:${catalog.teamSeasonId}:${round}`,new Date().toISOString());}catch{}} return ok; }, createForm: round => { void mutate("/api/forms/create", { round }); }, notify: message => { setToast(message); }, navigate, settings: () => { keyboard.hide(); setSettingsOpen(true); } }}><div className="coach-app" style={{"--coach-nav-inset":navInset,"--coach-header-height":`${headerHeight}px`} as React.CSSProperties} data-source={remote ? "google" : "demo"}>{booting?<div className="launch-screen" role="status"><span className="ios-spinner"/><strong>CoachMate</strong><span>Je team wordt geladen…</span></div>:<><Header title={settingsOpen ? "Instellingen" : titles[activeTab]} onBack={settingsOpen ? () => { keyboard.hide(); setSettingsOpen(false); } : undefined} eyebrow={needsTeam?"Google-team niet geladen":`${catalog.clubName ? catalog.clubName + " · " : ""}${catalog.teamName} · ${catalog.seasonName}`} /><div className="app-notices">{!noticeDismissed && ((!remote && (blocked || storageError)) || connectionError) ? <div className="storage-warning" role="alert"><button type="button" className="notice-close" aria-label="Melding sluiten" onClick={()=>setNoticeDismissed(true)}><Cross1Icon/></button>{[!remote && (blocked || storageError), connectionError === "Failed to fetch" ? "Geen verbinding met de gegevensbron. Je gebruikt momenteel de lokale demo." : connectionError].filter(Boolean).join(" ")}<button type="button" disabled={busy} onClick={() => {if(loadFailure)void inspectLoadRecovery();else if(journalRef.current)retrySave();else if(remote)void selectTeam(catalog.teamSeasonId);else void checkConnection();}}>Opnieuw proberen</button><button type="button" onClick={openRecoverySettings}>Instellingen</button></div> : null}{busy&&!booting&&<p className="sync-status" role="status"><span className="ios-spinner"/>Gegevens worden verwerkt…</p>}</div>{catalog.archived && <p className="archive-banner">Archief · alleen lezen</p>}<MobileScroll key={`${remote ? session?.email : "demo"}:${catalog.teamSeasonId}`} className="app-screen"><div className="app-shell">{remote&&journal&&(activeTab!=="live"||settingsOpen)&&persistence}{settingsOpen && settingsPage}<div hidden={settingsOpen}>{needsTeam ? <main className="screen-content"><h1>{busy ? "Team laden…" : loadFailure ? "Team laden geblokkeerd" : "Kies je team"}</h1><p>{loadFailure?"Je Google-account is ingelogd. Je wedstrijdgegevens konden niet worden geladen. Bewaar het herstelbestand voordat je verdergaat.":"Open je Google-team om wedstrijden en statistieken te gebruiken."}</p>{loadFailure?<div className="sheet-actions"><button type="button" className="primary-button" disabled={busy} onClick={()=>void inspectLoadRecovery()}>Herstel bekijken</button><button type="button" className="secondary-button" onClick={exportLoadRecovery}>Herstelbestand exporteren</button></div>:<button type="button" className="primary-button" onClick={openRecoverySettings}>Team kiezen</button>}</main> : activeTab === "dashboard" ? <Dashboard /> : activeTab === "live" ? (sharedLiveMatch && remote && session?.sharedLiveEnabled && parentPortalEnabled ? <SharedCoachLive key={sharedLiveMatch.id} match={sharedLiveMatch} team={catalog.teamSeasonId} players={catalog.players} journal={Boolean(journal)} request={request} onProcessed={refreshMatchStatus}><LiveScreen /></SharedCoachLive> : <LiveScreen />) : activeTab === "availability" ? <AvailabilityScreen /> : null}<div hidden={activeTab !== "stats" || needsTeam}><StatsScreen key={`${remote ? session?.email : "demo"}:${catalog.teamSeasonId}`} homeRequest={statsHomeRequest} /></div></div></div></MobileScroll><AppNav tab={settingsOpen ? null : activeTab} onChange={tab=>{if(tab==="stats"&&activeTab==="stats"&&!settingsOpen&&!needsTeam)setStatsHomeRequest(request=>request+1);navigate(tab);}} />{toast ? <div className="toast" role="status" style={{ bottom:`calc(var(--coach-nav-height) + ${navInset} + 8px)` }}><CheckCircledIcon />{toast}</div> : null}</>}
       <BottomSheet open={loadRecoveryOpen} onOpenChange={setLoadRecoveryOpen} title="Team laden herstellen" description="Je oorspronkelijke wedstrijdconcept blijft op dit apparaat bewaard.">
         <p>{loadFailure?.kind==='local-journal'?"De controle van Google-gegevens is geslaagd. Het lokale concept kon niet worden gelezen. We controleren of je oorspronkelijke acties veilig opnieuw kunnen worden opgebouwd.":"De Google-wedstrijdgegevens konden niet worden gelezen. Opnieuw inloggen verandert die gegevens niet."}</p>
         <button type="button" className="secondary-button" onClick={exportLoadRecovery}>Herstelbestand exporteren</button>
