@@ -18,6 +18,7 @@ import { parentEmailLogin } from './parent-email.mjs';
 import { SharedLive } from './shared-live.mjs';
 import { ParentPortal, parentEmail, projectParentAnswers, withoutParentProjection } from './parents.mjs';
 import {prepareRoundJob,queueInvitationBatch,workerReady,serviceDataToken} from './invitations.mjs';
+import {createGeminiSwapAdvisor,swapPromptOptions} from './gemini-swaps.mjs';
 import {appStoreFromEnvironment} from './firestore-app-store.mjs';
 
 const production = process.env.NODE_ENV === 'production';
@@ -28,6 +29,8 @@ if (production && (!origin.startsWith('https://') || apiOrigin !== origin)) thro
 const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID;
 const appStore = appStoreFromEnvironment(process.env);
 const allowed = (process.env.COACH_EMAILS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+const geminiSwapAdvisor = process.env.COACHMATE_GEMINI_SWAP_ENABLED === 'true' ? createGeminiSwapAdvisor(process.env.COACHMATE_GEMINI_PROJECT) : null;
+const lastSwapRequest = new Map();
 const configured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && (appStore || spreadsheetId && allowed.length));
 const activeStore = auth => appStore ?? new SheetsStore(auth,spreadsheetId);
 const googleAccount = subject => typeof subject==='string'&&subject ? 'google:'+subject : '';
@@ -203,7 +206,7 @@ const server = http.createServer(async (req, res) => {
     }
     const coachAccess=appStore&&active?.kind==='coach'?await appStore.getCoachAccess(active.uid):null;
     if(appStore&&!hasCoachAccess(coachAccess))active=null;
-    if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, sharedLiveEnabled:Boolean(sharedLive), parentEnabled, role:active?.kind, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf, dataSource:appStore?'firestore':'sheets' });
+    if (req.method === 'GET' && url.pathname === '/api/session') return send(res, 200, { configured, sharedLiveEnabled:Boolean(sharedLive), parentEnabled, role:active?.kind, authenticated: Boolean(active), email: active?.email, csrf: active?.csrf, dataSource:appStore?'firestore':'sheets', ...(active && geminiSwapAdvisor ? {geminiSwaps:true} : {}) });
     if (req.method === 'GET' && url.pathname === '/auth/login') {
       if (!configured) throw new HttpError(503, 'Google-aanmelding is hier nog niet ingesteld.');
       if (attempts.size > 100) throw new HttpError(429, 'Probeer later opnieuw.');
@@ -240,6 +243,15 @@ const server = http.createServer(async (req, res) => {
     if (!active) throw new HttpError(parentLogin?.session(requestCookies)?403:401,'Log in met je coachaccount.');
     if (req.method === 'POST' && (req.headers.origin !== origin || req.headers['x-csrf-token'] !== active.csrf)) throw new HttpError(403, 'Ongeldig verzoek. Herlaad de pagina.');
     if (req.method === 'POST' && url.pathname === '/api/logout') { sessions.delete(sid); res.setHeader('Set-Cookie', cookie('coach_session', '', 0)); return send(res, 200, { ok: true }); }
+    if (req.method === 'POST' && url.pathname === '/api/assistant/gemini-swaps') {
+      if (!geminiSwapAdvisor) throw new HttpError(404, 'Gemini-wisseladvies staat uit.');
+      const options = swapPromptOptions((await body(req))?.options);
+      if (!options) throw new HttpError(422, 'Ongeldige wisselopties.');
+      const coach = active.email.toLowerCase(), now = Date.now();
+      if (now - (lastSwapRequest.get(coach) ?? 0) < 10000) throw new HttpError(429, 'Wacht even voor je opnieuw Gemini vraagt.');
+      lastSwapRequest.set(coach,now);
+      return send(res, 200, { advice: await geminiSwapAdvisor(options) });
+    }
     const store = activeStore(active.auth);
     if (path.startsWith('/api/shared-live/')) {
       const input=req.method==='POST'?await body(req):Object.fromEntries(url.searchParams);

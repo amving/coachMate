@@ -60,7 +60,11 @@ De nieuwe Node-tests staan in `tests/recommendations.test.mjs`, de browsertests 
 
 Zie [het fase-3-testrapport](substitution-phase-3-tests.md) voor de aantallen, nieuwe flows en volledige regressiesuite. De eerdere [architectuur en zoeklimieten van de kern](substitution-optimizer.md) blijven gelden: dit is een begrensde heuristiek, geen garantie op een wereldwijd optimum voor iedere mogelijke beperking.
 
-Volgende fase: een afzonderlijke server-side Vertex-adapter met gevalideerde gestructureerde output en fallback. De deterministische adviezen blijven daarvan onafhankelijk.
+## Optioneel Gemini-advies
+
+Bij **Live → Plan en uitleg bekijken → Vraag Gemini om advies** vergelijkt Gemini maximaal drie lokaal goedgekeurde wisselopties. De server stuurt per optie uitsluitend een tijdelijk nummer, de maximale afwijking van de streeftijd, de rotatiescore, het aantal invallers en of de keeper blijft. Namen, speler- en wedstrijd-ID’s en vrije tekst gaan niet mee. Gemini kiest een optienummer en een reden uit vaste categorieën. CoachMate maakt daar een korte uitleg van met de lokale cijfers. Het resultaat verandert de opstelling pas via de bestaande stappen **Neem over als voorstel**, **Advies accepteren** en **Wissel als uitgevoerd registreren**. Bij uitval of een ongeldige reactie blijft het lokale voorstel beschikbaar.
+
+De optie staat standaard uit. Zet in een testomgeving `COACHMATE_GEMINI_SWAP_ENABLED=true` en `COACHMATE_GEMINI_PROJECT` op het toegestane Google Cloud-project. Schakel daar Vertex AI in en geef de afzonderlijke runtime-identiteit via Application Default Credentials de bevoegdheid `aiplatform.endpoints.predict`. CoachMate gebruikt Gemini 3.1 Flash-Lite via het EU-eindpunt. Handmatig advies is maximaal eens per tien seconden per coach per serverinstantie beschikbaar. [Model en regio](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-1-flash-lite) · [IAM-bevoegdheden](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/access-control)
 
 De voorbereiding gebruikt nu twee aparte schermvullende pagina’s: eerst uitsluitend Spelersgroep, daarna Wisselplan met keepers en opstelling. Zie [de UX-wijziging en verificatie](start-plan-two-step-tests.md).
 
